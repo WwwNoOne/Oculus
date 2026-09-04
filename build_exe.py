@@ -31,6 +31,7 @@ def build_exe():
         ".venv\\Scripts\\pyinstaller",
         "--name=Oculus",
         "--windowed",
+        "--contents-directory=internal",
         "--icon=icono.ico", # Usar el icono que convertimos
         f"--add-data={frontend_data}",
         "--clean",

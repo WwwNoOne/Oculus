@@ -1,6 +1,8 @@
 import json
+import re
 import pandas as pd
 from pathlib import Path
+from src.backend.utils.json_utils import extract_identificacion, get_document_sections, extract_sello, get_sello_from_mh_response
 
 class ExcelService:
     def __init__(self):
@@ -27,12 +29,28 @@ class ExcelService:
         
         return "UNKNOWN"
 
+    def _get_document(self, data):
+        detalle = data.get("detalleDTE")
+        if isinstance(detalle, dict) and not data.get("identificacion"):
+            return detalle
+        return data
+
     def _extract_tributos_especiales(self, tributos):
         percibido = 0.0
         retenido = 0.0
-        if not tributos: return percibido, retenido
+        if isinstance(tributos, str):
+            try:
+                tributos = json.loads(tributos)
+            except (TypeError, ValueError):
+                return percibido, retenido
+        if isinstance(tributos, dict):
+            tributos = [tributos]
+        if not isinstance(tributos, list):
+            return percibido, retenido
         
         for t in tributos:
+            if not isinstance(t, dict):
+                continue
             desc = str(t.get("descripcion", "")).lower()
             val = float(t.get("valor", 0.0))
             if "percibido" in desc or str(t.get("codigo", "")) in ["21", "C21"]:
@@ -46,7 +64,15 @@ class ExcelService:
         try:
             target_dir = carpeta_cliente / mes_anio
             if not target_dir.exists():
-                return False, f"La carpeta de datos {mes_anio} no existe."
+                disponibles = sorted(
+                    folder.name for folder in carpeta_cliente.iterdir()
+                    if folder.is_dir()
+                ) if carpeta_cliente.exists() else []
+                detalle = ", ".join(disponibles) or "ninguno"
+                return False, (
+                    f"La carpeta de datos no existe: {target_dir}. "
+                    f"Períodos disponibles para este cliente: {detalle}."
+                )
                 
             jsons_files = list(target_dir.glob("*.json"))
             if not jsons_files:
@@ -57,10 +83,13 @@ class ExcelService:
             
             for jf in jsons_files:
                 try:
-                    with open(jf, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
+                    try:
+                        data = json.loads(jf.read_text(encoding='utf-8-sig'))
+                    except UnicodeDecodeError:
+                        data = json.loads(jf.read_text(encoding='latin-1'))
                         
-                    identificacion = data.get("identificacion", {})
+                    documento = self._get_document(data)
+                    identificacion = extract_identificacion(data)
                     
                     # 1. Filtro estricto por Tipo DTE
                     tipo_dte = self._extract_tipo_dte(identificacion)
@@ -68,9 +97,11 @@ class ExcelService:
                         print(f"[{jf.name}] Saltando documento no admitido para compras (Tipo {tipo_dte})")
                         continue
                         
-                    emisor = data.get("emisor", {})
-                    resumen = data.get("resumen", {})
-                    sello_dict = data.get("selloRecepcion", {})
+                    emisor = get_document_sections(data, "emisor")
+                    resumen = get_document_sections(data, "resumen")
+                    sello_dict = get_document_sections(data, "selloRecepcion")
+                    sello_variante = extract_sello(data)
+                    sello_mh = get_sello_from_mh_response(data)
                     
                     row = {col: "" for col in self.columns}
                     row['No. Correlativo'] = correlativo
@@ -79,7 +110,7 @@ class ExcelService:
                     row['N.R.C.'] = emisor.get("nrc", "")
                     row['NIT,CIP,DUI del Sujeto Excluido'] = emisor.get("nit", "")
                     row['Nombre del Proveedor'] = emisor.get("nombre", "Desconocido")
-                    row['SERIE / SELLO DE RECEPCION'] = sello_dict.get("selloRecepcion", "")
+                    row['SERIE / SELLO DE RECEPCION'] = (sello_dict.get("selloRecepcion") or sello_variante or sello_mh or "")
                     row['No DE CONTROL /RESOLUCION'] = identificacion.get("numeroControl", "")
                     
                     # Extracción base (Asumiendo que ya tiene descuentos restados por diseño de Hacienda)
@@ -127,10 +158,18 @@ class ExcelService:
             if not rows:
                 return False, "No se encontraron DTEs válidos (03, 05, 06, 14) en este periodo."
                 
+            # La interfaz solicita una carpeta. Crear el archivo final aqui evita
+            # que pandas intente inferir el formato de una ruta sin extension.
+            output_dir = Path(save_path)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            alias = carpeta_cliente.name.strip() or "empresa"
+            alias = re.sub(r'[<>:"/\\|?*]', "_", alias).strip(" .") or "empresa"
+            output_file = output_dir / f"{alias}_Libro de compras_{mes_anio}.xlsx"
+
             df = pd.DataFrame(rows)
-            df.to_excel(save_path, index=False)
+            df.to_excel(output_file, index=False, engine="openpyxl")
             
-            return True, "Libro de compras generado exitosamente."
+            return True, f"Libro de compras generado exitosamente: {output_file.name}"
             
         except Exception as e:
             return False, f"Error general: {str(e)}"

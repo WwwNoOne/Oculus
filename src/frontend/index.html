@@ -26,7 +26,7 @@
                 </a>
                 <a href="#" class="nav-item" data-view="emails">
                     <i class="fa-solid fa-envelope"></i>
-                    <span>Cuentas de Correo</span>
+                    <span>Configuración de Correos</span>
                 </a>
                 <a href="#" class="nav-item" data-view="review">
                     <i class="fa-solid fa-clipboard-check"></i>
@@ -35,6 +35,10 @@
                 <a href="#" class="nav-item" data-view="dtes">
                     <i class="fa-solid fa-file-invoice"></i>
                     <span>Gestión de DTEs</span>
+                </a>
+                <a href="#" class="nav-item" data-view="recovery">
+                    <i class="fa-solid fa-life-ring"></i>
+                    <span>Recuperación</span>
                 </a>
                 <a href="#" class="nav-item" data-view="explorer">
                     <i class="fa-solid fa-folder-tree"></i>
@@ -53,6 +57,7 @@
         <!-- Main Content -->
         <main class="main-content">
             <header class="top-header">
+                <button class="icon-btn sidebar-toggle" id="btn-toggle-sidebar" title="Ocultar menú lateral" type="button"><i class="fa-solid fa-chevron-left"></i></button>
                 <div class="header-title">
                     <h2 id="view-title">Dashboard</h2>
                     <p class="subtitle">Monitoreo y extracción de documentos</p>
@@ -61,78 +66,94 @@
 
             <!-- Vista: Dashboard -->
             <div class="view-container active" id="view-dashboard">
-                <div class="widget glass-panel">
-                    <div class="widget-header">
-                        <h3><i class="fa-solid fa-server"></i> Controles del Motor</h3>
+                <div class="telemetry-dashboard">
+                    <!-- Top Panel: KPIs -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card glass-panel">
+                            <span class="kpi-title">Throughput Instantáneo</span>
+                            <div class="kpi-value"><span id="kpi-throughput">0.0</span> <small>docs/s</small></div>
+                            <div class="kpi-trend">Pico máx: <span id="kpi-throughput-max">0.0</span></div>
+                        </div>
+                        <div class="kpi-card glass-panel">
+                            <span class="kpi-title">Total Procesado</span>
+                            <div class="kpi-value"><span id="kpi-processed">0</span> <small>/ <span id="kpi-queued">0</span></small></div>
+                            <div class="kpi-trend success-text"><i class="fa-solid fa-arrow-trend-up"></i> En progreso</div>
+                        </div>
+                        <div class="kpi-card glass-panel">
+                            <span class="kpi-title">Tasa de Éxito</span>
+                            <div class="kpi-value" id="kpi-success-rate">100%</div>
+                            <div class="kpi-trend warning-text"><span id="kpi-errors">0</span> Errores</div>
+                        </div>
+                        <div class="kpi-card glass-panel">
+                            <span class="kpi-title">Estado del Motor</span>
+                            <div class="kpi-value status-badge" id="kpi-status">IDLE</div>
+                            <div class="kpi-trend" id="kpi-uptime">Uptime: 00:00:00</div>
+                        </div>
                     </div>
-                    <div class="widget-body" style="display: flex; gap: 16px; flex-wrap: wrap;">
-                        <button class="btn btn-teal" id="btn-process" style="flex: 1;">
-                            <i class="fa-solid fa-play"></i> Iniciar Monitoreo
-                        </button>
-                        <button class="btn btn-warning" id="btn-restart" style="flex: 1;">
-                            <i class="fa-solid fa-rotate-right"></i> Reiniciar Servicio
-                        </button>
-                        <button class="btn btn-danger" id="btn-shutdown" style="flex: 1;">
-                            <i class="fa-solid fa-power-off"></i> Apagar App
-                        </button>
-                    </div>
-                </div>
 
-                <div class="stats-grid">
-                    <div class="stat-card glass-panel">
-                        <div class="stat-icon bg-success">
-                            <i class="fa-solid fa-check-circle"></i>
+                    <!-- Middle Panel: Pipeline & Chart -->
+                    <div class="middle-panel">
+                        <div class="pipeline-card glass-panel">
+                            <div class="widget-header">
+                                <h3><i class="fa-solid fa-network-wired"></i> Live Pipeline Visualizer</h3>
+                            </div>
+                            <div class="pipeline-visualizer">
+                                <div class="pipeline-node" id="node-download">
+                                    <i class="fa-solid fa-cloud-arrow-down"></i>
+                                    <span>Download</span>
+                                    <div class="node-ring"></div>
+                                </div>
+                                <div class="pipeline-connector" id="conn-1"><div class="particle"></div></div>
+                                <div class="pipeline-node" id="node-process">
+                                    <i class="fa-solid fa-microchip"></i>
+                                    <span>Process</span>
+                                    <div class="node-ring"></div>
+                                </div>
+                                <div class="pipeline-connector" id="conn-2"><div class="particle"></div></div>
+                                <div class="pipeline-node" id="node-db">
+                                    <i class="fa-solid fa-database"></i>
+                                    <span>Storage</span>
+                                    <div class="node-ring"></div>
+                                </div>
+                            </div>
+                            
+                            <div class="controls-bar mt-4" style="display:flex; gap:10px; justify-content:center;">
+                                <select id="start-account-scope" class="premium-input" title="Cuenta a monitorear" style="max-width:260px;">
+                                    <option value="">Todas las cuentas</option>
+                                </select>
+                                <button class="btn btn-primary" id="btn-process"><i class="fa-solid fa-play"></i> Iniciar Monitoreo</button>
+                            </div>
                         </div>
-                        <div class="stat-info">
-                            <h3>DTEs Válidos</h3>
-                            <p class="stat-value" id="stat-processed">--</p>
-                            <span class="stat-desc">Códigos 03,05,06,14</span>
+                        
+                        <div class="chart-card glass-panel">
+                            <div class="widget-header">
+                                <h3><i class="fa-solid fa-chart-line"></i> Rendimiento en Vivo (docs/s)</h3>
+                            </div>
+                            <div class="chart-container">
+                                <canvas id="live-chart"></canvas>
+                            </div>
                         </div>
                     </div>
-                    <div class="stat-card glass-panel">
-                        <div class="stat-icon bg-warning">
-                            <i class="fa-solid fa-clock"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>En Cola</h3>
-                            <p class="stat-value" id="stat-pending">--</p>
-                            <span class="stat-desc">Pendientes de lectura</span>
-                        </div>
-                    </div>
-                    <div class="stat-card glass-panel">
-                        <div class="stat-icon bg-info">
-                            <i class="fa-solid fa-folder-open"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>Otros DTEs</h3>
-                            <p class="stat-value" id="stat-others">--</p>
-                            <span class="stat-desc">Archivados</span>
-                        </div>
-                    </div>
-                    <div class="stat-card glass-panel">
-                        <div class="stat-icon bg-danger">
-                            <i class="fa-solid fa-triangle-exclamation"></i>
-                        </div>
-                        <div class="stat-info">
-                            <h3>Requiere Revisión</h3>
-                            <p class="stat-value" id="stat-errors">--</p>
-                            <span class="stat-desc">Fallos de lectura OCR</span>
-                        </div>
-                    </div>
-                </div>
 
-                <div class="dashboard-widgets">
-                    <div class="widget glass-panel widget-large">
+                    <!-- Bottom Panel: Live Terminal -->
+                    <div class="terminal-card glass-panel">
                         <div class="widget-header">
-                            <h3>Actividad Reciente</h3>
+                            <h3><i class="fa-solid fa-terminal"></i> Live Activity Feed</h3>
                         </div>
-                        <div class="widget-body">
-                            <ul class="activity-list" id="activity-log">
-                                <li class="activity-item empty-state">
-                                    <i class="fa-solid fa-inbox"></i>
-                                    <p>Esperando iniciar procesamiento...</p>
-                                </li>
-                            </ul>
+                        <div class="terminal-body" id="terminal-feed">
+                            <table class="terminal-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Doc ID</th>
+                                        <th>Stage</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="terminal-body">
+                                    <tr class="empty-row"><td colspan="4">Esperando operaciones...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -166,19 +187,65 @@
                                 <i class="fa-solid fa-file-excel"></i> Generar Excel
                             </button>
                         </div>
+                        <small id="excel-diagnostics" class="form-hint"></small>
+                    </div>
+                </div>
+            </div>
+            <div class="view-container" id="view-recovery">
+                <div class="widget glass-panel widget-large">
+                    <div class="widget-header">
+                        <h3><i class="fa-solid fa-life-ring warning-text"></i> Recuperación de Respaldo</h3>
+                        <p class="subtitle">Descarga histórica aislada. No modifica la sincronización normal.</p>
+                    </div>
+                    <div class="widget-body dte-generator-form">
+                        <div class="form-group">
+                            <label>Cuenta de correo origen</label>
+                            <select id="recovery-account" class="premium-input"><option value="">-- Seleccione una cuenta --</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Alias de respaldo</label>
+                            <input type="text" id="recovery-alias" class="premium-input" value="RP1Pineli" placeholder="Ej. RP1Pineli">
+                        </div>
+                        <div class="form-group">
+                            <label>Desde</label>
+                            <input type="date" id="recovery-start-date" class="premium-input" value="2026-01-01">
+                        </div>
+                        <div class="form-group">
+                            <label>Hasta (exclusivo)</label>
+                            <input type="date" id="recovery-end-date" class="premium-input" value="2026-05-01">
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-warning" id="btn-start-recovery" type="button"><i class="fa-solid fa-download"></i> Iniciar recuperación</button>
+                            <button class="btn btn-outline" id="btn-stop-recovery" type="button" disabled><i class="fa-solid fa-stop"></i> Detener</button>
+                        </div>
+                        <small id="recovery-status" class="form-hint"></small>
                     </div>
                 </div>
             </div>
             <!-- Vista: Gestión de Cuentas de Correo -->
             <div class="view-container split-view" id="view-emails">
                 <div class="widget glass-panel split-left">
-                    <div class="widget-header">
-                        <h3><i class="fa-solid fa-circle-plus teal-text"></i> Agregar Nueva Cuenta</h3>
+                    <div class="widget-header space-between">
+                        <h3 id="form-account-title"><i class="fa-solid fa-circle-plus teal-text"></i> Agregar Nueva Cuenta</h3>
+                        <button class="icon-btn" id="btn-cancel-edit" title="Cancelar Edición" style="display:none; color: var(--danger);"><i class="fa-solid fa-times"></i></button>
                     </div>
                     <div class="widget-body">
+                        <input type="hidden" id="email-old-address">
                         <div class="form-group">
-                            <label>Nombre de Empresa / Cliente</label>
-                            <input type="text" id="email-client-name" class="premium-input" placeholder="Ej. Transporte Ejecutivo Shalom">
+                            <label>Empresa / Alias</label>
+                            <div style="display:flex; gap:10px;">
+                                <select id="email-client-name" class="premium-input" style="flex:1;">
+                                    <option value="">-- Registra o selecciona una empresa --</option>
+                                </select>
+                                <button class="btn btn-outline-teal" id="btn-add-company" type="button" title="Registrar empresa"><i class="fa-solid fa-plus"></i></button>
+                            </div>
+                            <small class="form-hint">Registra primero el alias; después puedes asociar varias cuentas.</small>
+                            <div id="company-form" style="display:none; margin-top:10px;">
+                                <div style="display:flex; gap:10px;">
+                                    <input type="text" id="new-company-alias" class="premium-input" placeholder="Ej. EmpresaXYZ" style="flex:1;">
+                                    <button class="btn btn-teal" id="btn-save-company" type="button">Registrar</button>
+                                </div>
+                            </div>
                         </div>
                         <div class="form-group">
                             <label>Correo Electrónico a Monitorear</label>
@@ -202,12 +269,17 @@
                             <small class="form-hint">IMAP usa 993. POP3 usa 995.</small>
                         </div>
                         <div class="form-group">
+                            <label>Descargar correos desde</label>
+                            <input type="date" id="email-start-date" class="premium-input" value="2026-05-01">
+                            <small class="form-hint">Esta fecha aplica solamente a esta cuenta.</small>
+                        </div>
+                        <div class="form-group">
                             <label>Contraseña de Aplicación</label>
                             <input type="password" id="email-password" class="premium-input" placeholder="xxxx-xxxx-xxxx-xxxx">
                             <small class="form-hint"><i class="fa-solid fa-shield"></i> Se almacena cifrada localmente.</small>
                         </div>
                         <button class="btn btn-teal full-width mt-4" id="btn-add-email">
-                            <i class="fa-solid fa-user-plus"></i> Registrar Cuenta
+                            <i class="fa-solid fa-user-plus"></i> Guardar Cuenta
                         </button>
                     </div>
                 </div>
@@ -326,8 +398,8 @@
                 </div>
             </div>
             <!-- Vista: Explorador de Otros Documentos -->
-            <div class="view-container split-view-large" id="view-explorer">
-                <div class="widget glass-panel split-left-large">
+             <div class="view-container" id="view-explorer">
+                 <div class="widget glass-panel widget-large">
                     <div class="widget-header space-between">
                         <h3><i class="fa-solid fa-folder-tree teal-text"></i> Otros Documentos</h3>
                         <div style="display:flex; gap:10px;">
@@ -343,20 +415,8 @@
                             </li>
                         </ul>
                     </div>
-                </div>
-                <div class="widget glass-panel split-right-small">
-                    <div class="widget-header">
-                        <h3>Vista Previa</h3>
-                    </div>
-                    <div class="widget-body pdf-container" id="explorer-preview-container">
-                        <div class="empty-state" id="explorer-empty-state">
-                            <i class="fa-solid fa-eye teal-text" style="font-size: 3rem; margin-bottom: 15px;"></i>
-                            <p>Selecciona un documento para verlo aquí</p>
-                        </div>
-                        <embed id="explorer-embed" src="" type="application/pdf" width="100%" height="100%" style="display:none; border-radius: 8px;">
-                    </div>
-                </div>
-            </div>
+                 </div>
+             </div>
 
             <!-- Vista: Configuración API Keys -->
             <div class="view-container" id="view-settings">
@@ -367,11 +427,25 @@
                     </div>
                     <div class="widget-body mt-4">
                         <div class="form-section mt-4">
-                            <h4>Groq (Procesamiento Principal)</h4>
+                            <h4>DeepSeek (Procesamiento Principal)</h4>
                             <div class="form-group">
-                                <label>Groq API Key</label>
-                                <input type="password" id="api-groq" class="premium-input" placeholder="gsk_...">
-                                <small class="form-hint">Motor principal para extraer datos de los JSON y PDFs estructurados.</small>
+                                <label>DeepSeek API Key <span id="deepseek-status" class="badge badge-teal" style="display:none; margin-left: 10px;">Configurada</span></label>
+                                <div style="display:flex; gap:10px;">
+                                    <input type="password" id="api-deepseek" class="premium-input" placeholder="sk-..." style="flex:1;">
+                                    <button class="btn btn-outline-teal" id="btn-change-deepseek" type="button" style="display:none;">Cambiar clave</button>
+                                </div>
+                                <small class="form-hint">Proveedor principal para estandarizar JSON y extraer datos de PDFs.</small>
+                            </div>
+                        </div>
+                        <div class="form-section mt-4">
+                            <h4>Gemini (Respaldo opcional)</h4>
+                            <div class="form-group">
+                                <label>Gemini API Key <span id="gemini-status" class="badge badge-teal" style="display:none; margin-left: 10px;">Configurada</span></label>
+                                <div style="display:flex; gap:10px;">
+                                    <input type="password" id="api-gemini" class="premium-input" placeholder="AIza..." style="flex:1;">
+                                    <button class="btn btn-outline-teal" id="btn-change-gemini" type="button" style="display:none;">Cambiar clave</button>
+                                </div>
+                                <small class="form-hint">Respaldo opcional. Usa un proyecto Gemini independiente.</small>
                             </div>
                         </div>
 
@@ -381,6 +455,10 @@
                     </div>
                 </div>
             </div>
+            <footer class="app-controls-footer">
+                <button class="btn btn-warning" id="btn-stop-process" type="button" disabled><i class="fa-solid fa-stop"></i> Detener proceso</button>
+                <button class="btn btn-danger" id="btn-close-app" type="button"><i class="fa-solid fa-power-off"></i> Cerrar aplicación</button>
+            </footer>
         </main>
     </div>
     

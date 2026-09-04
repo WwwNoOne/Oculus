@@ -1,26 +1,39 @@
 import os
 import json
 import fitz  # PyMuPDF
-from groq import Groq
+import requests
 from pathlib import Path
+from src.backend.utils.config import DATA_DIR
+from src.backend.utils.json_utils import extract_identificacion, find_section
+
+try:
+    from google import genai
+except ImportError:
+    genai = None
 
 class OCRService:
+    DEEPSEEK_MODEL = "deepseek-v4-flash"
+    GEMINI_MODEL = "gemini-3.6-flash"
+    AI_TIMEOUT_SECONDS = 180
+
     def __init__(self):
         # 1. Intentar cargar desde el settings.json local
-        self.groq_api_key = self._load_api_key("groq") or os.getenv("GROQ_API_KEY", "")
+        self.deepseek_api_key = self._load_api_key("deepseek") or os.getenv("DEEPSEEK_API_KEY", "")
         self.gemini_api_key = self._load_api_key("gemini") or os.getenv("GEMINI_API_KEY", "")
-        self.groq_client = Groq(api_key=self.groq_api_key) if self.groq_api_key else None
 
     def _load_api_key(self, key_name: str) -> str:
-        from src.backend.utils.config import DATA_DIR
-        settings_file = DATA_DIR / "settings.json"
-        if settings_file.exists():
-            try:
-                with open(settings_file, "r", encoding="utf-8") as f:
+        try:
+            settings_path = DATA_DIR / "settings.json"
+            if settings_path.exists():
+                with open(settings_path, "r", encoding="utf-8") as f:
                     settings = json.load(f)
-                    return settings.get(key_name, "")
-            except Exception:
-                pass
+                    val = settings.get(key_name, "")
+                    if val:
+                        from src.backend.utils.crypto import decrypt_data
+                        val = decrypt_data(val)
+                    return val
+        except Exception as e:
+            print(f"Error cargando settings: {e}")
         return ""
 
     def _extract_local_text(self, pdf_path: str) -> str:
@@ -35,11 +48,68 @@ class OCRService:
             print(f"Error extrayendo texto de {pdf_path}: {e}")
             return ""
 
+    def _generate_json(self, prompt: str) -> dict:
+        """Usa DeepSeek y deja Gemini como respaldo opcional."""
+        errors = []
+        if self.deepseek_api_key:
+            try:
+                response = requests.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers={"Authorization": f"Bearer {self.deepseek_api_key}"},
+                    json={"model": self.DEEPSEEK_MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 1024, "response_format": {"type": "json_object"}},
+                    timeout=self.AI_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                return self._parse_json_response(response.json()["choices"][0]["message"]["content"])
+            except Exception as exc:
+                errors.append(f"DeepSeek: {exc}")
+
+        if self.gemini_api_key:
+            try:
+                if genai:
+                    client = genai.Client(api_key=self.gemini_api_key)
+                    response = client.models.generate_content(
+                        model=self.GEMINI_MODEL,
+                        contents=prompt,
+                        config={"response_mime_type": "application/json", "max_output_tokens": 1024},
+                    )
+                    text = response.text
+                else:
+                    response = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{self.GEMINI_MODEL}:generateContent",
+                        params={"key": self.gemini_api_key},
+                        json={"contents": [{"parts": [{"text": prompt}]}]},
+                        timeout=self.AI_TIMEOUT_SECONDS,
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    text = body["candidates"][0]["content"]["parts"][0]["text"]
+                return self._parse_json_response(text)
+            except Exception as exc:
+                errors.append(f"Gemini: {exc}")
+
+        raise RuntimeError("; ".join(errors) or "No hay un proveedor de IA configurado")
+
+    def _parse_json_response(self, content: str) -> dict:
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:-3]
+        elif content.startswith("```"):
+            content = content[3:-3]
+        try:
+            return json.loads(content.strip())
+        except json.JSONDecodeError:
+            start = min((i for i in (content.find("{"), content.find("[")) if i >= 0), default=-1)
+            end = max(content.rfind("}"), content.rfind("]"))
+            if start < 0 or end < start:
+                raise
+            return json.loads(content[start:end + 1])
+
     def process_pdf_to_raw_json(self, pdf_path: str) -> dict:
         """
-        Tubería principal: PyMuPDF -> Groq (Llama 3.1 8B) -> JSON Crudo
+        Tubería principal: PyMuPDF -> DeepSeek -> JSON Crudo
         """
-        print(f"[*] Iniciando Extracción Híbrida (PyMuPDF + Groq) para: {pdf_path}")
+        print(f"[*] Iniciando Extracción Híbrida (PyMuPDF + DeepSeek) para: {pdf_path}")
         
         # 1. Extracción gratuita
         texto_crudo = self._extract_local_text(pdf_path)
@@ -48,20 +118,27 @@ class OCRService:
             print("[!] PDF escaneado detectado. Aquí entraría Gemini 3.6 Flash / LlamaParse.")
             return {"error": "documento_escaneado", "requires_vision": True}
         
-        # 2. Estructuración con Groq (Si hay llave configurada)
-        if not self.groq_client:
-            print("[!] No hay API Key de Groq. Simulando respuesta.")
+        # 2. Estructuración con DeepSeek (Gemini queda como respaldo)
+        if not self.deepseek_api_key and not self.gemini_api_key:
+            print("[!] No hay API Key de DeepSeek ni Gemini. Simulando respuesta.")
             return self._mock_response(pdf_path)
             
         prompt = f"""
         Eres un asistente experto en contabilidad. Extrae la siguiente información del texto de este Documento Tributario Electrónico (DTE).
         Debes responder ÚNICAMENTE con un JSON válido. No incluyas explicaciones, ni bloques markdown como ```json.
         
+        REGLAS DE EXTRACCIÓN:
+        1. La fecha de emisión es identificacion.fecEmi. NO uses otra fecha del documento como vencimiento, finalización, presentación, generación o transacción.
+        2. El sello oficial puede aparecer como selloRecibido, selloRecepcion o dentro de una sección respuestaMH/selloRecibido. Solo usa el sello real, no un número de resolución.
+        3. Si el sello no existe, devuelve selloRecepcion con cadena vacía y NO lo inventes.
+        4. tipoDte es el código que está en la identificación del DTE. Si el documento no es un DTE, devuelve tipoDte UNKNOWN.
+        5. Los valores numéricos deben copiarse como están, sin redondear.
+        
         Estructura requerida:
         {{
             "identificacion": {{
                 "codigoGeneracion": "UUID de 36 caracteres",
-                "tipoDte": "03, 05, 06 o 14",
+                 "tipoDte": "tipo DTE real, por ejemplo 01, 03, 05, 06, 07 o 14",
                 "numeroControl": "DTE-...",
                 "fecEmi": "YYYY-MM-DD"
             }},
@@ -77,7 +154,9 @@ class OCRService:
                 "ivaPerci1": 0.00,
                 "ivaRete1": 0.00
             }},
-            "selloRecibido": "Cadena alfanumérica del sello"
+            "selloRecepcion": {{
+                "selloRecepcion": "Cadena real del sello o cadena vacía"
+            }}
         }}
         
         Texto DTE:
@@ -85,42 +164,47 @@ class OCRService:
         """
         
         try:
-            response = self.groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.1,
-                max_tokens=1024,
-            )
-            content = response.choices[0].message.content.strip()
-            
-            # Limpiar posible markdown residual
-            if content.startswith("```json"):
-                content = content[7:-3]
-            elif content.startswith("```"):
-                content = content[3:-3]
-                
-            json_data = json.loads(content)
-            return json_data
+            return self._generate_json(prompt)
             
         except Exception as e:
-            print(f"[!] Error procesando con Groq: {e}")
+            print(f"[!] Error procesando con DeepSeek/Gemini: {e}")
             return {"error": "fallo_ia", "mensaje": str(e)}
 
     def parse_raw_to_standard(self, raw_json: dict) -> dict:
         """Transforma el JSON crudo en el formato estándar del sistema"""
         estandar_json = raw_json.copy()
-        estandar_json["_metadata"] = {"fuente": "GROQ_LLAMA3.1", "estandarizado": True}
+        estandar_json["_metadata"] = {
+            "fuente": "IA",
+            "estado": "Procesado con IA",
+            "estandarizado": True,
+        }
         return estandar_json
 
     def process_raw_json_text(self, json_text: str) -> dict:
         """
         Toma el texto de un JSON que puede venir deforme o con otros nombres de variables,
-        y lo pasa por Groq para que nos devuelva la estructura inmaculada y oficial.
+        y lo pasa por DeepSeek para que nos devuelva la estructura inmaculada y oficial.
         """
-        print("[*] Estandarizando JSON crudo a través de Groq...")
+        print("[*] Estandarizando JSON crudo a través de DeepSeek...")
+
+        # Los DTE oficiales ya estructurados no necesitan consumir IA.
+        try:
+            local_data = json.loads(json_text)
+            local_identification = extract_identificacion(local_data)
+            local_document = local_data
+            if not local_identification.get("tipoDte"):
+                local_document = find_section(local_data, "detalleDTE")
+                local_identification = extract_identificacion(local_document) if isinstance(local_document, dict) else {}
+            if (isinstance(local_identification, dict)
+                    and local_identification.get("tipoDte")
+                    and find_section(local_document, "emisor")
+                    and find_section(local_document, "resumen")):
+                return local_data
+        except (TypeError, ValueError):
+            pass
         
-        if not self.groq_client:
-            print("[!] No hay API Key de Groq. Devolviendo JSON original como fallback.")
+        if not self.deepseek_api_key and not self.gemini_api_key:
+            print("[!] No hay API Key de DeepSeek ni Gemini. Devolviendo JSON original como fallback.")
             try:
                 return json.loads(json_text)
             except:
@@ -132,11 +216,18 @@ class OCRService:
         Si un valor es numérico, ponlo como número.
         No incluyas explicaciones, ni bloques markdown como ```json. Solo responde con el JSON.
         
+        REGLAS OBLIGATORIAS:
+        1. Identificacion.fecEmi es la fecha de emisión. NO sustituyas por la fecha de cierre, facturación, recepción, vencimiento o generación.
+        2. El sello puede venir como selloRecepcion, selloRecibido o dentro de respuestaMH. Copia el sello real. Si no existe, deja cadena vacía; NO inventes uno.
+        3. El tipoDte es el que está dentro de la identificación. Si el documento NO es un DTE, devuelve "UNKNOWN".
+        4. Conserva los números originales sin inventar ni redondear.
+        5. Si la información está dañada o no se puede extraer de manera confiable, deja los campos vacíos en lugar de suponer valores.
+        
         Estructura requerida estricta:
         {{
             "identificacion": {{
                 "codigoGeneracion": "UUID de 36 caracteres",
-                "tipoDte": "03, 05, 06 o 14",
+                 "tipoDte": "tipo DTE real, por ejemplo 01, 03, 05, 06, 07 o 14",
                 "numeroControl": "DTE-...",
                 "fecEmi": "YYYY-MM-DD"
             }},
@@ -158,7 +249,7 @@ class OCRService:
                 ]
             }},
             "selloRecepcion": {{
-                "selloRecepcion": "Cadena alfanumérica del sello"
+                "selloRecepcion": "Cadena real del sello o cadena vacía"
             }}
         }}
         
@@ -167,24 +258,10 @@ class OCRService:
         """
         
         try:
-            response = self.groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.1-8b-instant",
-                temperature=0.0,
-                max_tokens=1024,
-            )
-            content = response.choices[0].message.content.strip()
-            
-            if content.startswith("```json"):
-                content = content[7:-3]
-            elif content.startswith("```"):
-                content = content[3:-3]
-                
-            json_data = json.loads(content)
-            return self.parse_raw_to_standard(json_data)
+            return self.parse_raw_to_standard(self._generate_json(prompt))
             
         except Exception as e:
-            print(f"[!] Error estandarizando JSON con Groq: {e}")
+            print(f"[!] Error estandarizando JSON con DeepSeek/Gemini: {e}")
             try:
                 # Fallback extremo: Si la IA falla o se satura, usar el json sucio
                 return json.loads(json_text)
@@ -194,7 +271,7 @@ class OCRService:
     def _mock_response(self, pdf_path: str) -> dict:
         return {
             "identificacion": {
-                "tipoDte": "03", 
+                "tipoDte": "UNKNOWN",
                 "codigoGeneracion": f"GEN-FROM-OCR-{Path(pdf_path).stem}"
             },
             "emisor": {"nombre": "Emisor Detectado IA", "nit": "0000-000000-000-0"},

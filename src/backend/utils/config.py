@@ -26,13 +26,20 @@ CARPETA_DESCARGAS = DATA_DIR / "01_Descargas"
 CARPETA_PROCESADOS = DATA_DIR / "02_Procesados"
 CARPETA_OTROS_DTES = DATA_DIR / "03_Otros_DTEs"
 CARPETA_REVISION = DATA_DIR / "04_Revision_Manual"
+CARPETA_RESPALDO_PDF = DATA_DIR / "05_Respaldo_PDF"
+CARPETA_ADJUNTOS_OTROS = DATA_DIR / "06_Adjuntos_Otros"
+CARPETA_DESCARGAS_RESPALDO = DATA_DIR / "07_Descargas_Respaldo"
 CARPETA_BD = DATA_DIR / "db"
+CARPETA_LOGS = DATA_DIR / "logs"
 
 # Asegurar que las carpetas existan
 def init_directories():
     directories = [
         DATA_DIR, CARPETA_DESCARGAS, CARPETA_PROCESADOS, 
-        CARPETA_OTROS_DTES, CARPETA_REVISION, CARPETA_BD
+        CARPETA_OTROS_DTES, CARPETA_REVISION, CARPETA_RESPALDO_PDF,
+        CARPETA_ADJUNTOS_OTROS,
+        CARPETA_DESCARGAS_RESPALDO,
+        CARPETA_BD, CARPETA_LOGS
     ]
     for d in directories:
         d.mkdir(parents=True, exist_ok=True)

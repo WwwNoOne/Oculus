@@ -16,10 +16,31 @@ def _patched_win32_ver(*args, **kwargs):
         return ('10', '10.0.0', '', 'Multiprocessor Free')
 platform.win32_ver = _patched_win32_ver
 
-from src.backend.utils.config import FRONTEND_DIR
+from src.backend.utils.config import FRONTEND_DIR, CARPETA_LOGS
 from src.backend.api import Api
 
+class LoggerWriter:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.terminal = sys.stdout
+        
+    def write(self, message):
+        with open(self.filepath, "a", encoding="utf-8") as f:
+            f.write(message)
+            
+    def flush(self):
+        pass
+
 def main():
+    # Setup global logging
+    log_file = CARPETA_LOGS / "app.log"
+    sys.stdout = LoggerWriter(log_file)
+    sys.stderr = LoggerWriter(log_file)
+    
+    print("\\n\\n==========================================")
+    print("Iniciando Oculus Gestor DTE")
+    print("==========================================")
+
     api = Api()
     index_html = FRONTEND_DIR / "index.html"
     

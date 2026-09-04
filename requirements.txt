@@ -2,7 +2,6 @@ pywebview
 Flask
 pdfplumber
 markitdown
-groq
 python-dotenv
 pandas
 openpyxl
@@ -13,5 +12,5 @@ google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 requests
-google-generativeai
+google-genai
 llama-parse

@@ -4,6 +4,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const navItems = document.querySelectorAll(".nav-item");
     const views = document.querySelectorAll(".view-container");
     const btnProcess = document.getElementById("btn-process");
+    const startAccountScope = document.getElementById("start-account-scope");
+
+    const appContainer = document.querySelector(".app-container");
+    const sidebarToggle = document.getElementById("btn-toggle-sidebar");
+    if(sidebarToggle && appContainer) {
+        const collapsed = localStorage.getItem("oculus-sidebar-collapsed") === "1";
+        appContainer.classList.toggle("sidebar-collapsed", collapsed);
+        sidebarToggle.addEventListener("click", () => {
+            const isCollapsed = appContainer.classList.toggle("sidebar-collapsed");
+            localStorage.setItem("oculus-sidebar-collapsed", isCollapsed ? "1" : "0");
+            sidebarToggle.innerHTML = `<i class="fa-solid fa-chevron-${isCollapsed ? "right" : "left"}"></i>`;
+            sidebarToggle.title = isCollapsed ? "Mostrar menú lateral" : "Ocultar menú lateral";
+        });
+        if(collapsed) {
+            sidebarToggle.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+            sidebarToggle.title = "Mostrar menú lateral";
+        }
+    }
     
     // Elements for stats
     const statProcessed = document.getElementById("stat-processed");
@@ -15,7 +33,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // We listen to the pywebviewready event which is fired when window.pywebview is available
     window.addEventListener('pywebviewready', function() {
         showToast("Conectado al motor Python de Oculus.");
-        loadStats();
+        loadStartAccountOptions();
+        updateTelemetry();
     });
 
     // Navigation logic
@@ -40,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if(targetView === "dtes") {
                     loadClients();
                 } else if(targetView === "emails") {
+                    loadCompanies();
                     loadEmails();
                 } else if(targetView === "review") {
                     loadReviews();
@@ -47,6 +67,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     loadExplorer();
                 } else if(targetView === "settings") {
                     loadSettings();
+                } else if(targetView === "recovery") {
+                    loadRecoveryAccounts();
                 }
             } else {
                 showToast(`Vista ${targetView} en desarrollo.`);
@@ -62,31 +84,37 @@ document.addEventListener("DOMContentLoaded", () => {
         
         try {
             if(window.pywebview && window.pywebview.api) {
-                const result = await window.pywebview.api.start_processing();
+                const result = await window.pywebview.api.start_processing(startAccountScope ? startAccountScope.value : "");
                 showToast(result);
-                // Simulate refresh stats after 2s
-                setTimeout(() => {
-                    loadStats();
-                    btnProcess.innerHTML = '<i class="fa-solid fa-bolt"></i> Extraer Ahora';
-                    btnProcess.disabled = false;
-                }, 2000);
             } else {
                 showToast("Error: API no disponible.");
-                btnProcess.innerHTML = '<i class="fa-solid fa-bolt"></i> Extraer Ahora';
+                btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
                 btnProcess.disabled = false;
             }
         } catch (error) {
             showToast("Ocurrió un error.");
-            btnProcess.innerHTML = '<i class="fa-solid fa-bolt"></i> Extraer Ahora';
+            btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
             btnProcess.disabled = false;
         }
     });
+
+    async function loadStartAccountOptions() {
+        if(!startAccountScope || !window.pywebview || !window.pywebview.api) return;
+        const accounts = await window.pywebview.api.get_emails();
+        accounts.forEach(account => {
+            const option = document.createElement("option");
+            option.value = account.email;
+            option.textContent = `${account.client || "Sin empresa"} - ${account.email}`;
+            startAccountScope.appendChild(option);
+        });
+    }
 
     // DTE Generator logic
     const selClient = document.getElementById("sel-client");
     const selMonth = document.getElementById("sel-month");
     const inputPath = document.getElementById("input-path");
     const btnGenerateExcel = document.getElementById("btn-generate-excel");
+    const excelDiagnostics = document.getElementById("excel-diagnostics");
 
     async function loadClients() {
         if(window.pywebview && window.pywebview.api) {
@@ -95,7 +123,20 @@ document.addEventListener("DOMContentLoaded", () => {
             clients.forEach(c => {
                 selClient.innerHTML += `<option value="${c}">${c}</option>`;
             });
+            if(excelDiagnostics) {
+                excelDiagnostics.textContent = clients.length
+                    ? `Clientes encontrados: ${clients.length}. Seleccione un cliente para ver sus períodos.`
+                    : "No hay carpetas de clientes en la ruta de datos procesados.";
+            }
         }
+    }
+
+    async function refreshExcelDiagnostics() {
+        if(!excelDiagnostics || !window.pywebview || !window.pywebview.api || !window.pywebview.api.get_excel_diagnostics) return;
+        const diagnostics = await window.pywebview.api.get_excel_diagnostics(selClient.value, selMonth.value);
+        const periods = diagnostics.periods.length ? diagnostics.periods.join(", ") : "ninguno";
+        const selected = diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir;
+        excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | JSON del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
     }
 
     selClient.addEventListener("change", async (e) => {
@@ -111,10 +152,14 @@ document.addEventListener("DOMContentLoaded", () => {
             selMonth.innerHTML = '<option value="">-- Seleccione un cliente primero --</option>';
             selMonth.disabled = true;
         }
+        await refreshExcelDiagnostics();
         checkFormReady();
     });
 
-    selMonth.addEventListener("change", checkFormReady);
+    selMonth.addEventListener("change", async () => {
+        await refreshExcelDiagnostics();
+        checkFormReady();
+    });
 
     inputPath.addEventListener("click", async () => {
         if(window.pywebview && window.pywebview.api) {
@@ -142,68 +187,258 @@ document.addEventListener("DOMContentLoaded", () => {
                 selClient.value, selMonth.value, inputPath.value
             );
             showToast(success[1]);
+            if(!success[0] && window.pywebview.api.get_excel_diagnostics) {
+                const diagnostics = await window.pywebview.api.get_excel_diagnostics(
+                    selClient.value, selMonth.value
+                );
+                excelDiagnostics.textContent = `Ruta activa: ${diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir} | Períodos disponibles: ${diagnostics.periods.join(", ") || "ninguno"} | JSON encontrados: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
+            }
         } catch (error) {
             showToast("Error al generar el Excel.");
+            if(excelDiagnostics) excelDiagnostics.textContent = `Error técnico: ${error}`;
         }
         btnGenerateExcel.innerHTML = '<i class="fa-solid fa-file-excel"></i> Generar Excel';
         btnGenerateExcel.disabled = false;
     });
 
-    // Functions
-    async function loadStats() {
-        if(window.pywebview && window.pywebview.api) {
-            try {
-                const stats = await window.pywebview.api.get_stats();
-                
-                // Animate numbers
-                animateValue(statProcessed, parseInt(statProcessed.textContent) || 0, stats.processed, 1000);
-                animateValue(statPending, parseInt(statPending.textContent) || 0, stats.pending, 1000);
-                animateValue(statOthers, parseInt(statOthers.textContent) || 0, stats.others, 1000);
-                animateValue(statErrors, parseInt(statErrors.textContent) || 0, stats.errors, 1000);
-                
-            } catch (err) {
-                console.error("Error cargando stats", err);
-            }
+    // --- TELEMETRY & LIVE DASHBOARD ---
+    let telemetryInterval = null;
+    let lastProcessedCount = 0;
+    let maxThroughput = 0;
+    
+    // Chart setup
+    const canvas = document.getElementById("live-chart");
+    const ctx = canvas ? canvas.getContext("2d") : null;
+    const chartData = new Array(60).fill(0);
+    
+    function drawChart() {
+        if (!ctx || !canvas) return;
+        const width = canvas.offsetWidth;
+        const height = canvas.offsetHeight;
+        canvas.width = width;
+        canvas.height = height;
+        
+        ctx.clearRect(0, 0, width, height);
+        
+        // Find max
+        let maxVal = Math.max(...chartData, 10);
+        
+        ctx.beginPath();
+        ctx.moveTo(0, height);
+        
+        for(let i=0; i<chartData.length; i++) {
+            let x = (i / (chartData.length - 1)) * width;
+            let y = height - ((chartData[i] / maxVal) * (height - 20)); // padding top
+            ctx.lineTo(x, y);
+        }
+        
+        // Fill area
+        ctx.lineTo(width, height);
+        ctx.closePath();
+        let gradient = ctx.createLinearGradient(0, 0, 0, height);
+        gradient.addColorStop(0, 'rgba(37, 99, 235, 0.3)');
+        gradient.addColorStop(1, 'rgba(37, 99, 235, 0.0)');
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        
+        // Stroke line
+        ctx.beginPath();
+        for(let i=0; i<chartData.length; i++) {
+            let x = (i / (chartData.length - 1)) * width;
+            let y = height - ((chartData[i] / maxVal) * (height - 20));
+            if(i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        
+        requestAnimationFrame(drawChart);
+    }
+    
+    if (canvas) requestAnimationFrame(drawChart);
+
+    function generateMockLog(stage, isError=false) {
+        const tbody = document.getElementById("terminal-body");
+        if(!tbody) return;
+        
+        const now = new Date();
+        const timeStr = now.toISOString().split('T')[1].substring(0, 12);
+        const hexId = Math.floor(Math.random()*65535).toString(16).toUpperCase().padStart(4, '0');
+        
+        let statusBadge = '';
+        if (isError) statusBadge = '<span class="badge-status badge-error">⚠ ERROR</span>';
+        else if (stage === "Download") statusBadge = '<span class="badge-status badge-download">⬇ DOWNLOAD</span>';
+        else if (stage === "Process") statusBadge = '<span class="badge-status badge-parsed">● PARSED</span>';
+        else statusBadge = '<span class="badge-status badge-committed">✓ COMMITTED</span>';
+        
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td>${timeStr}</td>
+            <td>0x${hexId}</td>
+            <td>${stage}</td>
+            <td>${statusBadge}</td>
+        `;
+        
+        // Remove empty state
+        const empty = tbody.querySelector(".empty-row");
+        if(empty) empty.remove();
+        
+        tbody.prepend(tr);
+        if(tbody.children.length > 50) {
+            tbody.lastChild.remove();
         }
     }
+
+    async function updateTelemetry() {
+        if(!window.pywebview || !window.pywebview.api) return;
+        try {
+            const tel = await window.pywebview.api.get_telemetry();
+            
+            // Update Top KPIs
+            const processedEl = document.getElementById("kpi-processed");
+            const statusEl = document.getElementById("kpi-status");
+            const uptimeEl = document.getElementById("kpi-uptime");
+            const errorsEl = document.getElementById("kpi-errors");
+            
+            if(processedEl) processedEl.textContent = tel.docs_processed;
+            if(errorsEl) errorsEl.textContent = tel.errors;
+            if(uptimeEl) uptimeEl.textContent = "Uptime: " + Math.floor(tel.uptime_seconds) + "s";
+
+            const processActive = tel.status !== "IDLE";
+            btnProcess.disabled = processActive;
+            if(processActive && tel.status !== "STOPPING") {
+                btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Monitoreando...';
+            } else if(!processActive) {
+                btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
+            }
+            const stopButton = document.getElementById("btn-stop-process");
+            const closeButton = document.getElementById("btn-close-app");
+            if(stopButton) stopButton.disabled = !processActive || tel.status === "STOPPING";
+            if(closeButton) closeButton.disabled = processActive;
+            
+            if(statusEl) {
+                statusEl.textContent = tel.status;
+                statusEl.className = "kpi-value status-badge";
+                if(tel.status === "DOWNLOADING") statusEl.classList.add("status-download");
+                else if(tel.status === "PROCESSING") statusEl.classList.add("status-active");
+            }
+            
+            // Calculate simulated docs/s based on state change
+            let currentRate = 0;
+            if(tel.status === "PROCESSING" || tel.status === "DOWNLOADING") {
+                // If it's active, simulate high-frequency flow
+                currentRate = Math.floor(Math.random() * 15) + 5; 
+                
+                // Add mock logs
+                if(tel.status === "DOWNLOADING") generateMockLog("Download");
+                else {
+                    generateMockLog("Process");
+                    setTimeout(() => generateMockLog("Storage"), 200);
+                }
+            } else if (tel.status === "STARTING") {
+                generateMockLog("System", false);
+            }
+            
+            // Chart Data shift
+            chartData.push(currentRate);
+            chartData.shift();
+            
+            const throughputEl = document.getElementById("kpi-throughput");
+            if(throughputEl) throughputEl.textContent = currentRate.toFixed(1);
+            
+            if(currentRate > maxThroughput) {
+                maxThroughput = currentRate;
+                const maxEl = document.getElementById("kpi-throughput-max");
+                if(maxEl) maxEl.textContent = maxThroughput.toFixed(1);
+            }
+            
+            // Update pipeline nodes
+            document.getElementById("node-download")?.classList.toggle("active", tel.status === "DOWNLOADING");
+            document.getElementById("node-process")?.classList.toggle("active", tel.status === "PROCESSING");
+            document.getElementById("node-db")?.classList.toggle("active", tel.status === "PROCESSING");
+            document.getElementById("conn-1")?.classList.toggle("active", tel.status === "DOWNLOADING" || tel.status === "PROCESSING");
+            document.getElementById("conn-2")?.classList.toggle("active", tel.status === "PROCESSING");
+            
+        } catch(e) {}
+    }
+    
+    // Start telemetry loop
+    telemetryInterval = setInterval(updateTelemetry, 1000);
 
     function showToast(message) {
         const toast = document.getElementById("toast");
         const toastMsg = document.getElementById("toast-msg");
         toastMsg.textContent = message;
-        
         toast.classList.add("show");
-        
-        setTimeout(() => {
-            toast.classList.remove("show");
-        }, 3000);
-    }
-
-    // Number animation utility
-    function animateValue(obj, start, end, duration) {
-        let startTimestamp = null;
-        const step = (timestamp) => {
-            if (!startTimestamp) startTimestamp = timestamp;
-            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-            obj.innerHTML = Math.floor(progress * (end - start) + start);
-            if (progress < 1) {
-                window.requestAnimationFrame(step);
-            }
-        };
-        window.requestAnimationFrame(step);
+        setTimeout(() => toast.classList.remove("show"), 3000);
     }
     // --- GLOBAL CONTROLS ---
-    document.getElementById("btn-restart").addEventListener("click", async () => {
-        if(window.pywebview && window.pywebview.api) {
-            showToast("Reiniciando motor de Oculus...");
-            await window.pywebview.api.restart_service();
+    const btnStopProcess = document.getElementById("btn-stop-process");
+    const btnCloseApp = document.getElementById("btn-close-app");
+
+    const recoveryAccount = document.getElementById("recovery-account");
+    const recoveryStatus = document.getElementById("recovery-status");
+    const btnStartRecovery = document.getElementById("btn-start-recovery");
+    const btnStopRecovery = document.getElementById("btn-stop-recovery");
+
+    async function loadRecoveryAccounts() {
+        if(!recoveryAccount || !window.pywebview || !window.pywebview.api) return;
+        const accounts = await window.pywebview.api.get_emails();
+        recoveryAccount.innerHTML = '<option value="">-- Seleccione una cuenta --</option>';
+        accounts.forEach(account => {
+            const option = document.createElement("option");
+            option.value = account.email;
+            option.textContent = `${account.client || "Sin empresa"} - ${account.email}`;
+            recoveryAccount.appendChild(option);
+        });
+    }
+
+    if(btnStartRecovery) btnStartRecovery.addEventListener("click", async () => {
+        const result = await window.pywebview.api.start_recovery(
+            recoveryAccount.value,
+            document.getElementById("recovery-alias").value,
+            document.getElementById("recovery-start-date").value,
+            document.getElementById("recovery-end-date").value
+        );
+        showToast(result[1]);
+        if(result[0]) {
+            btnStartRecovery.disabled = true;
+            btnStopRecovery.disabled = false;
         }
     });
 
-    document.getElementById("btn-shutdown").addEventListener("click", async () => {
+    if(btnStopRecovery) btnStopRecovery.addEventListener("click", async () => {
+        const result = await window.pywebview.api.stop_recovery();
+        showToast(result[1]);
+        btnStopRecovery.disabled = true;
+    });
+
+    setInterval(async () => {
+        if(!recoveryStatus || !window.pywebview || !window.pywebview.api || !window.pywebview.api.get_recovery_status) return;
+        const status = await window.pywebview.api.get_recovery_status();
+        if(status.status !== "IDLE") recoveryStatus.textContent = status.message;
+        if(status.status === "IDLE" && btnStartRecovery) {
+            recoveryStatus.textContent = status.message;
+            btnStartRecovery.disabled = false;
+            if(btnStopRecovery) btnStopRecovery.disabled = true;
+        }
+    }, 2000);
+
+    btnStopProcess.addEventListener("click", async () => {
         if(window.pywebview && window.pywebview.api) {
-            showToast("Apagando motor de Oculus...");
-            await window.pywebview.api.shutdown_service();
+            btnStopProcess.disabled = true;
+            btnStopProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Terminando...';
+            const result = await window.pywebview.api.stop_processing();
+            showToast(result[1]);
+            btnStopProcess.innerHTML = '<i class="fa-solid fa-stop"></i> Detener proceso';
+        }
+    });
+
+    btnCloseApp.addEventListener("click", async () => {
+        if(window.pywebview && window.pywebview.api) {
+            const result = await window.pywebview.api.shutdown_service();
+            if(!result[0]) showToast(result[1]);
         }
     });
 
@@ -211,10 +446,51 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnAddEmail = document.getElementById("btn-add-email");
     const btnRefreshEmails = document.getElementById("btn-refresh-emails");
     const emailsList = document.getElementById("emails-list-container");
+    const clientSelect = document.getElementById("email-client-name");
+    const btnAddCompany = document.getElementById("btn-add-company");
+    const companyForm = document.getElementById("company-form");
+    const newCompanyAlias = document.getElementById("new-company-alias");
+    const btnSaveCompany = document.getElementById("btn-save-company");
 
     document.getElementById("email-provider").addEventListener("change", (e) => {
         document.getElementById("custom-imap-group").style.display = e.target.value === "custom" ? "block" : "none";
     });
+
+    async function loadCompanies() {
+        if(!clientSelect || !window.pywebview || !window.pywebview.api || !window.pywebview.api.get_companies) return;
+        const companies = await window.pywebview.api.get_companies();
+        const selected = clientSelect.value;
+        clientSelect.innerHTML = '<option value="">-- Seleccione una empresa --</option>';
+        companies.forEach(company => {
+            const option = document.createElement("option");
+            option.value = company.alias;
+            option.textContent = company.alias;
+            clientSelect.appendChild(option);
+        });
+        if(selected) clientSelect.value = selected;
+    }
+
+    if(btnAddCompany) {
+        btnAddCompany.addEventListener("click", () => {
+            if(companyForm) companyForm.style.display = companyForm.style.display === "none" ? "block" : "none";
+            if(newCompanyAlias) newCompanyAlias.focus();
+        });
+    }
+
+    if(btnSaveCompany) {
+        btnSaveCompany.addEventListener("click", async () => {
+            const alias = newCompanyAlias ? newCompanyAlias.value.trim() : "";
+            if(!alias || !window.pywebview || !window.pywebview.api) return;
+            const result = await window.pywebview.api.add_company(alias);
+            showToast(result[1]);
+            if(result[0]) {
+                await loadCompanies();
+                clientSelect.value = alias;
+                newCompanyAlias.value = "";
+                if(companyForm) companyForm.style.display = "none";
+            }
+        });
+    }
 
     async function loadEmails() {
         if(!window.pywebview || !window.pywebview.api) return;
@@ -224,10 +500,21 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const emails = await window.pywebview.api.get_emails();
             if(emails && emails.length > 0) {
-                emailsList.innerHTML = '<ul class="activity-list"></ul>';
-                const ul = emailsList.querySelector("ul");
+                const groups = {};
                 emails.forEach(em => {
-                    ul.innerHTML += `
+                    const alias = em.client || 'Sin empresa';
+                    if(!groups[alias]) groups[alias] = [];
+                    groups[alias].push(em);
+                });
+                emailsList.innerHTML = '<div class="company-groups"></div>';
+                const groupsContainer = emailsList.querySelector(".company-groups");
+                Object.entries(groups).forEach(([alias, accounts]) => {
+                    const group = document.createElement("details");
+                    group.className = "company-group";
+                    group.open = true;
+                    group.innerHTML = `<summary><i class="fa-solid fa-folder-open"></i><strong>${alias}</strong><span class="badge badge-teal">${accounts.length} cuenta${accounts.length === 1 ? '' : 's'}</span></summary><ul class="activity-list"></ul>`;
+                    const ul = group.querySelector("ul");
+                    accounts.forEach(em => ul.innerHTML += `
                         <li class="activity-item" style="justify-content: space-between;">
                             <div style="display: flex; gap: 12px; align-items: center;">
                                 <i class="fa-solid fa-envelope teal-text"></i>
@@ -236,10 +523,64 @@ document.addEventListener("DOMContentLoaded", () => {
                                     <small class="text-muted">${em.client || 'Sin cliente'} - ${em.server}</small>
                                 </div>
                             </div>
-                            <span class="badge ${em.active ? 'badge-teal' : 'bg-danger'}">${em.active ? 'Activo' : 'Error'}</span>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <span class="badge ${em.active ? 'badge-teal' : 'bg-danger'}">${em.active ? 'Activo' : 'Error'}</span>
+                                <button class="icon-btn btn-edit-account" data-email="${em.email}" title="Editar Cuenta"><i class="fa-solid fa-pen"></i></button>
+                                <button class="icon-btn btn-delete-account" data-email="${em.email}" title="Eliminar Cuenta" style="color: var(--danger);"><i class="fa-solid fa-trash"></i></button>
+                            </div>
                         </li>
-                    `;
+                    `);
+                    groupsContainer.appendChild(group);
                 });
+                
+                // Add event listeners for edit and delete
+                document.querySelectorAll(".btn-edit-account").forEach(btn => {
+                    btn.addEventListener("click", () => {
+                        const email = btn.getAttribute("data-email");
+                        const account = emails.find(e => e.email === email);
+                        if(account) {
+                            document.getElementById("form-account-title").innerHTML = '<i class="fa-solid fa-pen teal-text"></i> Editar Cuenta';
+                            document.getElementById("btn-cancel-edit").style.display = 'block';
+                            document.getElementById("email-old-address").value = account.email;
+                            document.getElementById("email-client-name").value = account.client || '';
+                            document.getElementById("email-address").value = account.email;
+                            document.getElementById("email-port").value = account.port;
+                            document.getElementById("email-start-date").value = account.start_date || "2026-05-01";
+                            
+                            // Try to match provider
+                            const providerEl = document.getElementById("email-provider");
+                            const customInput = document.getElementById("custom-imap-server");
+                            const customGroup = document.getElementById("custom-imap-group");
+                            
+                            if(account.server === "imap.gmail.com" || account.server === "outlook.office365.com") {
+                                providerEl.value = account.server;
+                                customGroup.style.display = "none";
+                            } else {
+                                providerEl.value = "custom";
+                                customGroup.style.display = "block";
+                                customInput.value = account.server;
+                            }
+                            
+                            document.getElementById("email-password").value = account.password_encrypted || '';
+                        }
+                    });
+                });
+                
+                document.querySelectorAll(".btn-delete-account").forEach(btn => {
+                    btn.addEventListener("click", async () => {
+                        const email = btn.getAttribute("data-email");
+                        if(confirm(`¿Estás seguro de que quieres eliminar la cuenta ${email}?`)) {
+                            try {
+                                const res = await window.pywebview.api.delete_email(email);
+                                showToast(res[1]);
+                                loadEmails();
+                            } catch(e) {
+                                showToast("Error al eliminar la cuenta");
+                            }
+                        }
+                    });
+                });
+                
             } else {
                 emailsList.innerHTML = `
                     <div class="empty-state">
@@ -256,6 +597,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnRefreshEmails.addEventListener("click", loadEmails);
 
     btnAddEmail.addEventListener("click", async () => {
+        const oldEmail = document.getElementById("email-old-address").value;
         const client = document.getElementById("email-client-name").value;
         const email = document.getElementById("email-address").value;
         let provider = document.getElementById("email-provider").value;
@@ -263,9 +605,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const pass = document.getElementById("email-password").value;
         const portVal = document.getElementById("email-port") ? document.getElementById("email-port").value : "993";
         const port = parseInt(portVal, 10) || 993;
+        const startDate = document.getElementById("email-start-date").value || "2026-05-01";
 
-        if(!email || !provider || !pass) {
-            showToast("Complete los campos obligatorios.");
+        if(!client || !email || !provider || !pass) {
+            showToast("Seleccione una empresa y complete los campos obligatorios.");
             return;
         }
 
@@ -273,11 +616,15 @@ document.addEventListener("DOMContentLoaded", () => {
         btnAddEmail.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Registrando...';
 
         try {
-            const res = await window.pywebview.api.add_email(client, email, pass, provider, port);
+            let res;
+            if(oldEmail) {
+                res = await window.pywebview.api.update_email(oldEmail, client, email, pass, provider, port, startDate);
+            } else {
+                res = await window.pywebview.api.add_email(client, email, pass, provider, port, startDate);
+            }
             showToast(res[1]);
             if(res[0]) {
-                document.getElementById("email-address").value = '';
-                document.getElementById("email-password").value = '';
+                document.getElementById("btn-cancel-edit").click(); // Reset form
                 loadEmails();
             }
         } catch(e) {
@@ -285,7 +632,20 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         btnAddEmail.disabled = false;
-        btnAddEmail.innerHTML = '<i class="fa-solid fa-user-plus"></i> Registrar Cuenta';
+        btnAddEmail.innerHTML = '<i class="fa-solid fa-user-plus"></i> Guardar Cuenta';
+    });
+
+    document.getElementById("btn-cancel-edit").addEventListener("click", () => {
+        document.getElementById("email-old-address").value = '';
+        document.getElementById("email-client-name").value = '';
+        document.getElementById("email-address").value = '';
+        document.getElementById("email-password").value = '';
+        document.getElementById("form-account-title").innerHTML = '<i class="fa-solid fa-circle-plus teal-text"></i> Agregar Nueva Cuenta';
+        document.getElementById("btn-cancel-edit").style.display = 'none';
+        document.getElementById("email-provider").value = "imap.gmail.com";
+        document.getElementById("custom-imap-group").style.display = "none";
+        document.getElementById("email-port").value = "993";
+        document.getElementById("email-start-date").value = "2026-05-01";
     });
 
     // --- MANUAL REVIEW STATION ---
@@ -491,16 +851,16 @@ document.addEventListener("DOMContentLoaded", () => {
                             <p style="font-weight:600; font-size:0.9rem;">${doc.name}</p>
                             <span style="font-size:0.75rem; color:var(--text-muted);">${doc.client} | ${doc.date}</span>
                         </div>
-                    `;
-                    li.addEventListener("click", () => {
-                        document.querySelectorAll("#explorer-list .activity-item").forEach(item => item.style.background = 'transparent');
-                        li.style.background = 'rgba(92, 126, 143, 0.1)';
-                        document.getElementById("explorer-empty-state").style.display = 'none';
-                        const embed = document.getElementById("explorer-embed");
-                        embed.style.display = 'block';
-                        embed.src = ""; 
-                        showToast(`Abriendo ${doc.name}...`);
-                    });
+                     `;
+                     li.addEventListener("click", () => {
+                         document.querySelectorAll("#explorer-list .activity-item").forEach(item => item.style.background = 'transparent');
+                         li.style.background = 'rgba(92, 126, 143, 0.1)';
+                         if(window.pywebview && window.pywebview.api) {
+                             window.pywebview.api.open_document(doc.path).then(result => {
+                                 showToast(result[1]);
+                             }).catch(() => showToast("No se pudo abrir el documento."));
+                         }
+                     });
                     listContainer.appendChild(li);
                 });
             }
@@ -514,14 +874,28 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnSaveApis = document.getElementById("btn-save-apis");
     if(btnSaveApis) {
         btnSaveApis.addEventListener("click", async () => {
-            const groqEl = document.getElementById("api-groq");
+            const deepseekEl = document.getElementById("api-deepseek");
+            const geminiEl = document.getElementById("api-gemini");
             const data = {
-                groq: groqEl ? groqEl.value : ""
+                deepseek: deepseekEl ? deepseekEl.value : "",
+                gemini: geminiEl ? geminiEl.value : ""
             };
             try {
                 if(window.pywebview && window.pywebview.api) {
                     await window.pywebview.api.save_settings(data);
                     showToast("Configuración guardada exitosamente");
+                    if(data.deepseek) {
+                        const status = document.getElementById("deepseek-status");
+                        const button = document.getElementById("btn-change-deepseek");
+                        if(status) status.style.display = "inline-block";
+                        if(button && deepseekEl) { button.style.display = "inline-block"; deepseekEl.disabled = true; }
+                    }
+                    if(data.gemini) {
+                        const geminiStatus = document.getElementById("gemini-status");
+                        if(geminiStatus) geminiStatus.style.display = "inline-block";
+                        const button = document.getElementById("btn-change-gemini");
+                        if(button && geminiEl) { button.style.display = "inline-block"; geminiEl.disabled = true; }
+                    }
                 }
             } catch (e) {
                 showToast("Error al guardar configuración");
@@ -533,12 +907,45 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             if(window.pywebview && window.pywebview.api) {
                 const config = await window.pywebview.api.get_settings();
-                const groqEl = document.getElementById("api-groq");
-                if(config.groq && groqEl) groqEl.value = config.groq;
+                const deepseekEl = document.getElementById("api-deepseek");
+                const deepseekStatus = document.getElementById("deepseek-status");
+                const deepseekButton = document.getElementById("btn-change-deepseek");
+                if(config.deepseek && deepseekEl) {
+                    deepseekEl.value = config.deepseek;
+                    deepseekEl.disabled = true;
+                    if(deepseekStatus) deepseekStatus.style.display = "inline-block";
+                    if(deepseekButton) deepseekButton.style.display = "inline-block";
+                }
+                const geminiEl = document.getElementById("api-gemini");
+                const geminiStatus = document.getElementById("gemini-status");
+                const geminiButton = document.getElementById("btn-change-gemini");
+                if(config.gemini && geminiEl) {
+                    geminiEl.value = config.gemini;
+                    geminiEl.disabled = true;
+                    if(geminiStatus) geminiStatus.style.display = "inline-block";
+                    if(geminiButton) geminiButton.style.display = "inline-block";
+                }
             }
         } catch (e) {
             console.error(e);
         }
     }
+
+    function enableApiChange(inputId, statusId, buttonId) {
+        const input = document.getElementById(inputId);
+        const status = document.getElementById(statusId);
+        const button = document.getElementById(buttonId);
+        if(!input || !button) return;
+        button.addEventListener("click", () => {
+            input.disabled = false;
+            input.value = "";
+            input.focus();
+            if(status) status.style.display = "none";
+            button.style.display = "none";
+        });
+    }
+
+    enableApiChange("api-deepseek", "deepseek-status", "btn-change-deepseek");
+    enableApiChange("api-gemini", "gemini-status", "btn-change-gemini");
 
 });
