@@ -359,6 +359,8 @@ class DTEService:
                 # del mismo documento (caso "1 correo con 2 PDF y 1 JSON").
                 if json_asociado_data and self._es_duplicado(json_asociado_data, subfolder):
                     self._mover_a_duplicados([pdf] + json_para_mover, subfolder)
+                    if json_asociado_path is not None:
+                        jsons_usados.add(json_asociado_path)
                     db.log_extraction(pdf.name, "DUPLICATE", dte_code=tipo_dte)
                     resultados["duplicados"] += 1
                     done_docs += 1

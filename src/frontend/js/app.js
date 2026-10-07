@@ -213,6 +213,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     ? `Clientes encontrados: ${clients.length}. Seleccione un cliente para ver sus períodos.`
                     : "No hay carpetas de clientes en la ruta de datos procesados.";
             }
+            // Recordar la ultima carpeta de destino (persistida en settings.json del backend).
+            try {
+                const settings = await window.pywebview.api.get_settings();
+                if(settings && settings.last_excel_dir && !inputPath.value) {
+                    inputPath.value = settings.last_excel_dir;
+                    checkFormReady();
+                }
+            } catch(e) {}
         }
     }
 
@@ -222,6 +230,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const periods = diagnostics.periods.length ? diagnostics.periods.join(", ") : "ninguno";
         const selected = diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir;
         excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | JSON del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
+        const summary = document.getElementById("excel-summary");
+        if(summary) {
+            summary.textContent = (selClient.value && selMonth.value)
+                ? `${diagnostics.json_count} documentos JSON, ${diagnostics.pdf_count} con PDF.`
+                : "";
+        }
     }
 
     const toggleShowRecovery = document.getElementById("toggle-show-recovery");
@@ -275,8 +289,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     btnGenerateExcel.addEventListener("click", async () => {
-        btnGenerateExcel.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generando...';
-        btnGenerateExcel.disabled = true;
+        setBusy(btnGenerateExcel, true, "Generando...");
         const btnOpenExport = document.getElementById("btn-open-export");
         if(btnOpenExport) btnOpenExport.style.display = "none";
         try {
@@ -298,6 +311,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         showToast("No se pudo abrir la carpeta.");
                     }
                 };
+                // Recordar la carpeta de destino en el backend (settings.json).
+                try {
+                    const settings = await window.pywebview.api.get_settings();
+                    settings.last_excel_dir = inputPath.value;
+                    await window.pywebview.api.save_settings(settings);
+                } catch(e) {}
             }
             if(!success && window.pywebview.api.get_excel_diagnostics) {
                 const diagnostics = await window.pywebview.api.get_excel_diagnostics(
@@ -308,9 +327,10 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
             showToast("Error al generar el Excel.");
             if(excelDiagnostics) excelDiagnostics.textContent = `Error técnico: ${error}`;
+        } finally {
+            setBusy(btnGenerateExcel, false);
+            checkFormReady();
         }
-        btnGenerateExcel.innerHTML = '<i class="fa-solid fa-file-excel"></i> Generar Excel';
-        btnGenerateExcel.disabled = false;
     });
 
     // --- TELEMETRIA REAL DEL MOTOR ---
@@ -414,6 +434,63 @@ document.addEventListener("DOMContentLoaded", () => {
         toast.classList.add("show");
         setTimeout(() => toast.classList.remove("show"), 3000);
     }
+
+    // Modal de confirmación reutilizable: showConfirm(title, message, danger) -> Promise<boolean>.
+    // Reemplaza al confirm() nativo en toda la app.
+    let modalResolve = null;
+    function showConfirm(title, message, danger) {
+        const overlay = document.getElementById("modal-overlay");
+        const titleEl = document.getElementById("modal-title");
+        const messageEl = document.getElementById("modal-message");
+        const okBtn = document.getElementById("modal-ok");
+        const cancelBtn = document.getElementById("modal-cancel");
+        if(!overlay || !okBtn || !cancelBtn) return Promise.resolve(false);
+        titleEl.textContent = title || "Confirmar";
+        messageEl.textContent = message || "";
+        okBtn.className = "btn " + (danger === false ? "btn-primary" : "btn-danger");
+        overlay.style.display = "flex";
+        const previouslyFocused = document.activeElement;
+        cancelBtn.focus();
+        return new Promise((resolve) => {
+            const done = (value) => {
+                overlay.style.display = "none";
+                okBtn.onclick = null;
+                cancelBtn.onclick = null;
+                overlay.onclick = null;
+                document.removeEventListener("keydown", onKey);
+                modalResolve = null;
+                if(previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
+                resolve(value);
+            };
+            modalResolve = done;
+            okBtn.onclick = () => done(true);
+            cancelBtn.onclick = () => done(false);
+            overlay.onclick = (e) => { if(e.target === overlay) done(false); };
+            const onKey = (e) => {
+                if(e.key === "Escape") done(false);
+                else if(e.key === "Enter" && document.activeElement !== cancelBtn) done(true);
+                else if(e.key === "Tab") {
+                    // Trampa de foco simple dentro del modal.
+                    if(e.shiftKey && document.activeElement === cancelBtn) { e.preventDefault(); okBtn.focus(); }
+                    else if(!e.shiftKey && document.activeElement === okBtn) { e.preventDefault(); cancelBtn.focus(); }
+                }
+            };
+            document.addEventListener("keydown", onKey);
+        });
+    }
+
+    // Botones con estado "ocupado": spinner + disabled, restaurados siempre en finally.
+    function setBusy(btn, busy, busyLabel) {
+        if(!btn) return;
+        if(busy) {
+            if(btn.dataset.originalHtml === undefined) btn.dataset.originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${busyLabel || "Procesando..."}`;
+        } else {
+            btn.disabled = false;
+            if(btn.dataset.originalHtml !== undefined) btn.innerHTML = btn.dataset.originalHtml;
+        }
+    }
     // --- GLOBAL CONTROLS ---
     const btnStopProcess = document.getElementById("btn-stop-process");
     const btnCloseApp = document.getElementById("btn-close-app");
@@ -475,14 +552,20 @@ document.addEventListener("DOMContentLoaded", () => {
             listContainer.querySelectorAll(".btn-delete-backup").forEach(btn => {
                 btn.addEventListener("click", async () => {
                     const alias = btn.getAttribute("data-alias");
-                    if(confirm(`Se eliminarán los archivos del respaldo '${alias}'. Esta acción no se puede deshacer. ¿Continuar?`)) {
-                        try {
-                            const res = await window.pywebview.api.delete_client_data(alias, true, false);
-                            showToast(res[1]);
-                            if(res[0]) { loadRecoveryBackups(); }
-                        } catch(e) {
-                            showToast("Error al eliminar el respaldo.");
-                        }
+                    const confirmed = await showConfirm(
+                        "Eliminar respaldo",
+                        `Se eliminarán los archivos del respaldo '${alias}'. Esta acción no se puede deshacer.`
+                    );
+                    if(!confirmed) return;
+                    setBusy(btn, true, "Eliminando...");
+                    try {
+                        const res = await window.pywebview.api.delete_client_data(alias, true, false);
+                        showToast(res[1]);
+                        if(res[0]) { loadRecoveryBackups(); }
+                    } catch(e) {
+                        showToast("Error al eliminar el respaldo.");
+                    } finally {
+                        setBusy(btn, false);
                     }
                 });
             });
@@ -539,6 +622,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     btnCloseApp.addEventListener("click", async () => {
         if(window.pywebview && window.pywebview.api) {
+            const confirmed = await showConfirm(
+                "Cerrar aplicación",
+                "¿Cerrar Oculus? El motor debe estar detenido.",
+                false
+            );
+            if(!confirmed) return;
             const result = await window.pywebview.api.shutdown_service();
             if(!result[0]) showToast(result[1]);
         }
@@ -622,13 +711,14 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <i class="fa-solid fa-envelope teal-text"></i>
                                 <div>
                                     <strong style="display:block;">${em.email}</strong>
-                                    <small class="text-muted">${em.client || 'Sin cliente'} - ${em.server}</small>
+                                    <small class="text-muted">${em.client || 'Sin cliente'} - ${em.server} · sync: ${em.last_sync || 'nunca'}</small>
                                 </div>
                             </div>
                             <div style="display: flex; gap: 10px; align-items: center;">
-                                <span class="badge ${em.active ? 'badge-teal' : 'bg-danger'}">${em.active ? 'Activo' : 'Error'}</span>
-                                <button class="icon-btn btn-edit-account" data-email="${em.email}" title="Editar Cuenta"><i class="fa-solid fa-pen"></i></button>
-                                <button class="icon-btn btn-delete-account" data-email="${em.email}" title="Eliminar Cuenta" style="color: var(--danger);"><i class="fa-solid fa-trash"></i></button>
+                                <span class="badge protocol-chip">${em.port === 995 ? 'POP3 995' : 'IMAP ' + em.port}</span>
+                                <span class="badge ${em.active ? 'badge-teal' : 'bg-danger'}">${em.active ? 'Activa' : 'Con error de conexión'}</span>
+                                <button class="icon-btn btn-edit-account" data-email="${em.email}" title="Editar Cuenta" aria-label="Editar cuenta ${em.email}"><i class="fa-solid fa-pen"></i></button>
+                                <button class="icon-btn btn-delete-account" data-email="${em.email}" title="Eliminar Cuenta" aria-label="Eliminar cuenta ${em.email}" style="color: var(--danger);"><i class="fa-solid fa-trash"></i></button>
                             </div>
                         </li>
                     `);
@@ -663,7 +753,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                 customInput.value = account.server;
                             }
                             
-                            document.getElementById("email-password").value = account.password_encrypted || '';
+                            document.getElementById("email-password").value = "";
                         }
                     });
                 });
@@ -671,14 +761,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.querySelectorAll(".btn-delete-account").forEach(btn => {
                     btn.addEventListener("click", async () => {
                         const email = btn.getAttribute("data-email");
-                        if(confirm(`¿Estás seguro de que quieres eliminar la cuenta ${email}?`)) {
-                            try {
-                                const res = await window.pywebview.api.delete_email(email);
-                                showToast(res[1]);
-                                loadEmails();
-                            } catch(e) {
-                                showToast("Error al eliminar la cuenta");
-                            }
+                        const confirmed = await showConfirm(
+                            "Eliminar cuenta",
+                            `¿Eliminar la cuenta ${email}? Dejará de monitorearse.`
+                        );
+                        if(!confirmed) return;
+                        setBusy(btn, true, "Eliminando...");
+                        try {
+                            const res = await window.pywebview.api.delete_email(email);
+                            showToast(res[1]);
+                            loadEmails();
+                        } catch(e) {
+                            showToast("Error al eliminar la cuenta");
+                        } finally {
+                            setBusy(btn, false);
                         }
                     });
                 });
@@ -701,7 +797,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnAddEmail.addEventListener("click", async () => {
         const oldEmail = document.getElementById("email-old-address").value;
         const client = document.getElementById("email-client-name").value;
-        const email = document.getElementById("email-address").value;
+        const email = document.getElementById("email-address").value.trim();
         let provider = document.getElementById("email-provider").value;
         if(provider === "custom") provider = document.getElementById("custom-imap-server").value;
         const pass = document.getElementById("email-password").value;
@@ -709,13 +805,24 @@ document.addEventListener("DOMContentLoaded", () => {
         const port = parseInt(portVal, 10) || 993;
         const startDate = document.getElementById("email-start-date").value || "2026-05-01";
 
-        if(!client || !email || !provider || !pass) {
+        if(!client || !email || !provider) {
             showToast("Seleccione una empresa y complete los campos obligatorios.");
             return;
         }
+        if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            showToast("Formato de correo inválido.");
+            return;
+        }
+        if(port < 1 || port > 65535) {
+            showToast("Puerto fuera de rango (1-65535).");
+            return;
+        }
+        if(!oldEmail && !pass) {
+            showToast("La contraseña es obligatoria para cuentas nuevas.");
+            return;
+        }
 
-        btnAddEmail.disabled = true;
-        btnAddEmail.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Registrando...';
+        setBusy(btnAddEmail, true, "Registrando...");
 
         try {
             let res;
@@ -731,10 +838,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch(e) {
             showToast("Error de conexión con Python.");
+        } finally {
+            setBusy(btnAddEmail, false);
         }
-
-        btnAddEmail.disabled = false;
-        btnAddEmail.innerHTML = '<i class="fa-solid fa-user-plus"></i> Guardar Cuenta';
     });
 
     document.getElementById("btn-cancel-edit").addEventListener("click", () => {
@@ -893,8 +999,7 @@ document.addEventListener("DOMContentLoaded", () => {
             total: parseFloat(document.getElementById("rev-grand-total").textContent) || 0
         };
 
-        btnSaveReview.disabled = true;
-        btnSaveReview.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando...';
+        setBusy(btnSaveReview, true, "Guardando...");
 
         try {
             await window.pywebview.api.save_manual_review(data);
@@ -902,7 +1007,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // Remove from list and update
             pendingReviews.splice(currentReviewIndex, 1);
             if(currentReviewIndex >= pendingReviews.length) currentReviewIndex = Math.max(0, pendingReviews.length - 1);
-            
+
             if(pendingReviews.length > 0) {
                 updateReviewUI();
             } else {
@@ -910,9 +1015,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch(e) {
             showToast("Error al guardar.");
-            btnSaveReview.disabled = false;
+        } finally {
+            setBusy(btnSaveReview, false);
         }
-        btnSaveReview.innerHTML = '<i class="fa-solid fa-save"></i> Guardar y Procesar';
     });
 
     // --- EXPLORER LOGIC ---
@@ -982,6 +1087,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 deepseek: deepseekEl ? deepseekEl.value : "",
                 gemini: geminiEl ? geminiEl.value : ""
             };
+            // Conservar claves de UI (p. ej. last_excel_dir) al guardar.
+            try {
+                if(window.pywebview && window.pywebview.api && window.pywebview.api.get_settings) {
+                    const current = await window.pywebview.api.get_settings();
+                    if(current && current.last_excel_dir) data.last_excel_dir = current.last_excel_dir;
+                }
+            } catch(e) {}
+            setBusy(btnSaveApis, true, "Guardando...");
             try {
                 if(window.pywebview && window.pywebview.api) {
                     await window.pywebview.api.save_settings(data);
@@ -1001,6 +1114,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             } catch (e) {
                 showToast("Error al guardar configuración");
+            } finally {
+                setBusy(btnSaveApis, false);
             }
         });
     }

@@ -20,31 +20,34 @@
                 <span class="version-tag" id="app-version">v2.0</span>
             </div>
             <nav class="main-nav">
-                <a href="#" class="nav-item" data-view="dashboard">
+                <p class="nav-group">Operación</p>
+                <a href="#" class="nav-item" data-view="dashboard" title="Dashboard: estado y control del motor">
                     <i class="fa-solid fa-chart-pie"></i>
                     <span>Dashboard</span>
                 </a>
-                <a href="#" class="nav-item" data-view="emails">
-                    <i class="fa-solid fa-envelope"></i>
-                    <span>Configuración de Correos</span>
-                </a>
-                <a href="#" class="nav-item" data-view="review">
+                <a href="#" class="nav-item" data-view="review" title="Revisión manual: completar datos de documentos">
                     <i class="fa-solid fa-clipboard-check"></i>
                     <span>Revisión Manual</span>
                 </a>
-                <a href="#" class="nav-item" data-view="dtes">
+                <p class="nav-group">Reportes</p>
+                <a href="#" class="nav-item" data-view="dtes" title="Gestión de DTEs: generar libro de compras">
                     <i class="fa-solid fa-file-invoice"></i>
                     <span>Gestión de DTEs</span>
                 </a>
-                <a href="#" class="nav-item" data-view="recovery">
-                    <i class="fa-solid fa-life-ring"></i>
-                    <span>Recuperación</span>
-                </a>
-                <a href="#" class="nav-item" data-view="explorer">
+                <a href="#" class="nav-item" data-view="explorer" title="Otros documentos: DTEs no incluidos en compras">
                     <i class="fa-solid fa-folder-tree"></i>
                     <span>Otros Documentos</span>
                 </a>
-                <a href="#" class="nav-item" data-view="settings">
+                <p class="nav-group">Configuración</p>
+                <a href="#" class="nav-item" data-view="emails" title="Correos: cuentas y empresas monitoreadas">
+                    <i class="fa-solid fa-envelope"></i>
+                    <span>Configuración de Correos</span>
+                </a>
+                <a href="#" class="nav-item" data-view="recovery" title="Recuperación: descargas históricas aisladas">
+                    <i class="fa-solid fa-life-ring"></i>
+                    <span>Recuperación</span>
+                </a>
+                <a href="#" class="nav-item" data-view="settings" title="Configuración: claves del motor IA">
                     <i class="fa-solid fa-gear"></i>
                     <span>Configuración</span>
                 </a>
@@ -57,7 +60,7 @@
         <!-- Main Content -->
         <main class="main-content">
             <header class="top-header">
-                <button class="icon-btn sidebar-toggle" id="btn-toggle-sidebar" title="Ocultar menú lateral" type="button"><i class="fa-solid fa-chevron-left"></i></button>
+                <button class="icon-btn sidebar-toggle" id="btn-toggle-sidebar" title="Ocultar menú lateral" aria-label="Ocultar menú lateral" type="button"><i class="fa-solid fa-chevron-left"></i></button>
                 <div class="header-title">
                     <h2 id="view-title">Dashboard</h2>
                     <p class="subtitle">Monitoreo y extracción de documentos</p>
@@ -118,7 +121,7 @@
                     </div>
                     <div class="widget-body dte-generator-form">
                         <div class="form-group">
-                            <label>Seleccionar Cliente</label>
+                            <label>Paso 1 · Cliente</label>
                             <select id="sel-client" class="premium-input">
                                 <option value="">-- Seleccione un cliente --</option>
                             </select>
@@ -128,15 +131,16 @@
                             </label>
                         </div>
                         <div class="form-group">
-                            <label>Seleccionar Período (Año - Mes)</label>
+                            <label>Paso 2 · Período (Año - Mes)</label>
                             <select id="sel-month" class="premium-input" disabled>
                                 <option value="">-- Seleccione un cliente primero --</option>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Ruta de Guardado</label>
+                            <label>Paso 3 · Carpeta de destino</label>
                             <input type="text" id="input-path" class="premium-input" placeholder="C:/Mis Documentos/Libros..." readonly>
                         </div>
+                        <p id="excel-summary" class="form-hint"></p>
                         <div class="form-actions">
                             <button class="btn btn-primary" id="btn-generate-excel" disabled>
                                 <i class="fa-solid fa-file-excel"></i> Generar Excel
@@ -203,7 +207,7 @@
                 <div class="widget glass-panel split-left">
                     <div class="widget-header space-between">
                         <h3 id="form-account-title"><i class="fa-solid fa-circle-plus teal-text"></i> Agregar Nueva Cuenta</h3>
-                        <button class="icon-btn" id="btn-cancel-edit" title="Cancelar Edición" style="display:none; color: var(--danger);"><i class="fa-solid fa-times"></i></button>
+                        <button class="icon-btn" id="btn-cancel-edit" title="Cancelar Edición" aria-label="Cancelar edición" style="display:none; color: var(--danger);"><i class="fa-solid fa-times"></i></button>
                     </div>
                     <div class="widget-body">
                         <input type="hidden" id="email-old-address">
@@ -213,7 +217,7 @@
                                 <select id="email-client-name" class="premium-input" style="flex:1;">
                                     <option value="">-- Registra o selecciona una empresa --</option>
                                 </select>
-                                <button class="btn btn-outline-teal" id="btn-add-company" type="button" title="Registrar empresa"><i class="fa-solid fa-plus"></i></button>
+                                <button class="btn btn-outline-teal" id="btn-add-company" type="button" title="Registrar empresa" aria-label="Registrar empresa"><i class="fa-solid fa-plus"></i></button>
                             </div>
                             <small class="form-hint">Registra primero el alias; después puedes asociar varias cuentas.</small>
                             <div id="company-form" style="display:none; margin-top:10px;">
@@ -251,8 +255,8 @@
                         </div>
                         <div class="form-group">
                             <label>Contraseña de Aplicación</label>
-                            <input type="password" id="email-password" class="premium-input" placeholder="xxxx-xxxx-xxxx-xxxx">
-                            <small class="form-hint"><i class="fa-solid fa-shield"></i> Se almacena cifrada localmente.</small>
+                            <input type="password" id="email-password" class="premium-input" placeholder="Dejar vacío para mantener la actual">
+                            <small class="form-hint"><i class="fa-solid fa-shield"></i> Se almacena cifrada localmente. Obligatoria solo al crear.</small>
                         </div>
                         <button class="btn btn-teal full-width mt-4" id="btn-add-email">
                             <i class="fa-solid fa-user-plus"></i> Guardar Cuenta
@@ -262,7 +266,7 @@
                 <div class="widget glass-panel split-right">
                     <div class="widget-header space-between">
                         <h3><i class="fa-solid fa-list-check"></i> Cuentas Activas</h3>
-                        <button class="icon-btn" id="btn-refresh-emails" title="Refrescar Lista"><i class="fa-solid fa-rotate"></i></button>
+                        <button class="icon-btn" id="btn-refresh-emails" title="Refrescar Lista" aria-label="Refrescar lista de cuentas"><i class="fa-solid fa-rotate"></i></button>
                     </div>
                     <div class="widget-body" id="emails-list-container">
                         <div class="empty-state">
@@ -293,9 +297,9 @@
                     <div class="widget-header space-between">
                         <h3>Completar Datos</h3>
                         <div class="pagination-controls">
-                            <button class="icon-btn" id="btn-prev-review" disabled><i class="fa-solid fa-chevron-left"></i></button>
+                            <button class="icon-btn" id="btn-prev-review" title="Documento anterior" aria-label="Documento anterior" disabled><i class="fa-solid fa-chevron-left"></i></button>
                             <span id="review-counter" class="badge badge-teal">0 / 0</span>
-                            <button class="icon-btn" id="btn-next-review" disabled><i class="fa-solid fa-chevron-right"></i></button>
+                            <button class="icon-btn" id="btn-next-review" title="Documento siguiente" aria-label="Documento siguiente" disabled><i class="fa-solid fa-chevron-right"></i></button>
                         </div>
                     </div>
                     <div class="widget-body review-form">
@@ -357,7 +361,7 @@
                                 <label>Otros Impuestos</label>
                                 <div style="display:flex; gap:10px;">
                                     <input type="number" id="rev-tax-input" class="premium-input" step="0.01" placeholder="Ej: 10.50">
-                                    <button class="btn btn-outline-teal" id="btn-add-tax" type="button"><i class="fa-solid fa-plus"></i></button>
+                                    <button class="btn btn-outline-teal" id="btn-add-tax" type="button" title="Agregar impuesto" aria-label="Agregar impuesto"><i class="fa-solid fa-plus"></i></button>
                                 </div>
                                 <ul id="rev-tax-list" class="activity-list mt-2" style="max-height: 100px; overflow-y: auto;"></ul>
                                 <input type="hidden" id="rev-taxes-total" value="0">
@@ -381,7 +385,7 @@
                         <div style="display:flex; gap:10px;">
                             <input type="date" id="exp-filter-date" class="premium-input" style="width:150px; padding: 6px;">
                             <input type="text" id="exp-filter-client" class="premium-input" placeholder="Filtrar cliente..." style="width:200px; padding: 6px;">
-                            <button class="icon-btn" id="btn-refresh-explorer"><i class="fa-solid fa-rotate"></i></button>
+                            <button class="icon-btn" id="btn-refresh-explorer" title="Refrescar documentos" aria-label="Refrescar documentos"><i class="fa-solid fa-rotate"></i></button>
                         </div>
                     </div>
                     <div class="widget-body" style="padding:0; overflow-y:auto; max-height:calc(100vh - 150px);">
@@ -438,6 +442,18 @@
         </main>
     </div>
     
+    <!-- Modal de confirmación reutilizable -->
+    <div id="modal-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <h3 id="modal-title">Confirmar</h3>
+            <p id="modal-message"></p>
+            <div class="form-actions modal-actions">
+                <button class="btn btn-outline" id="modal-cancel" type="button">Cancelar</button>
+                <button class="btn btn-danger" id="modal-ok" type="button">Confirmar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="toast">
         <div class="toast-icon"><i class="fa-solid fa-info-circle"></i></div>

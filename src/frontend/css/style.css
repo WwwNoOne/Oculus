@@ -1,13 +1,17 @@
 :root {
+    /* Acento unico de la app: teal. --primary se conserva como alias historico. */
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+
     /* Color Palette - Pure Dark Theme */
     --bg-base: #090d16;
     --bg-glass: #161b22;
     --bg-glass-hover: #1c2128;
     --border-glass: #30363d;
-    --primary: #2563eb; 
-    --primary-hover: #3b82f6;
+    --primary: var(--accent);
+    --primary-hover: var(--accent-hover);
     --text-main: #ffffff;
-    --text-muted: #9ca3af; 
+    --text-muted: #b3bac2;
     
     /* Semantic Colors */
     --success: #10b981;
@@ -16,8 +20,8 @@
     --warning-bg: rgba(245, 158, 11, 0.15);
     --danger: #ef4444;
     --danger-bg: rgba(239, 68, 68, 0.15);
-    --info: #3b82f6;
-    --info-bg: rgba(59, 130, 246, 0.15);
+    --info: var(--accent);
+    --info-bg: rgba(45, 212, 191, 0.15);
 
     /* Shadows & Transitions */
     --shadow-glass: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
@@ -137,14 +141,14 @@ body {
 .logo-icon {
     width: 40px;
     height: 40px;
-    background: linear-gradient(135deg, var(--primary), var(--info));
+    background: linear-gradient(135deg, var(--accent), #0d9488);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 1.2rem;
     color: white;
-    box-shadow: 0 4px 15px rgba(109, 40, 217, 0.4);
+    box-shadow: 0 4px 15px rgba(45, 212, 191, 0.4);
 }
 
 .logo-text {
@@ -187,9 +191,17 @@ body {
 }
 
 .nav-item.active {
-    background: rgba(37, 99, 235, 0.15);
+    background: rgba(45, 212, 191, 0.15);
     color: var(--primary);
     border-left: 3px solid var(--primary);
+}
+
+.nav-group {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    padding: 12px 16px 4px;
 }
 
 .sidebar-footer {
@@ -243,13 +255,13 @@ body {
 .btn-primary {
     background: var(--primary);
     color: white;
-    box-shadow: 0 4px 15px rgba(109, 40, 217, 0.3);
+    box-shadow: 0 4px 15px rgba(45, 212, 191, 0.3);
 }
 
 .btn-primary:hover {
     background: var(--primary-hover);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(109, 40, 217, 0.4);
+    box-shadow: 0 6px 20px rgba(45, 212, 191, 0.4);
 }
 
 .btn-primary:active {
@@ -426,6 +438,17 @@ body {
     font-size: 1.2rem;
 }
 
+.toast-message {
+    flex: 1;
+}
+
+/* Ganchos de JS para botones de lista (heredan .icon-btn). */
+.btn-edit-account,
+.btn-delete-account,
+.btn-delete-backup {
+    cursor: pointer;
+}
+
 /* --- SPLIT VIEWS --- */
 .split-view {
     display: flex;
@@ -488,7 +511,7 @@ body {
 .premium-input:focus {
     outline: none;
     border-color: var(--primary);
-    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+    box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.2);
 }
 .premium-input:disabled {
     opacity: 0.5;
@@ -504,9 +527,9 @@ body {
 .btn-teal {
     background: var(--primary);
     color: white;
-    box-shadow: 0 4px 15px rgba(92, 126, 143, 0.3);
+    box-shadow: 0 4px 15px rgba(45, 212, 191, 0.3);
 }
-.btn-teal:hover { background: var(--primary-hover); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(92, 126, 143, 0.4);}
+.btn-teal:hover { background: var(--primary-hover); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(45, 212, 191, 0.4);}
 .btn-warning { background: #d97706; color: white; }
 .btn-warning:hover { background: #b45309; transform: translateY(-2px); }
 .btn-danger { background: #e11d48; color: white; }
@@ -530,7 +553,8 @@ body {
     border-radius: 20px;
     font-size: 0.8rem;
 }
-.badge-teal { background: rgba(45, 212, 191, 0.2); color: #2dd4bf; }
+.badge-teal { background: rgba(45, 212, 191, 0.2); color: var(--accent); }
+.protocol-chip { background: rgba(255,255,255,0.08); color: var(--text-main); }
 .pdf-container {
     padding: 0;
     display: flex;
@@ -879,6 +903,97 @@ body {
     color: var(--text-muted);
 }
 
+/* --- CLASES COMUNES (usadas en vistas y JS) --- */
+.btn-outline {
+    background: transparent;
+    border: 1px solid var(--border-glass);
+    color: var(--text-main);
+}
+.btn-outline:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.btn-outline-teal {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+}
+.btn-outline-teal:hover {
+    background: rgba(45, 212, 191, 0.12);
+}
+.widget-large {
+    max-width: 860px;
+    width: 100%;
+    margin: 0 auto;
+}
+.widget-body {
+    display: flex;
+    flex-direction: column;
+}
+.form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+.controls-bar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
+.pagination-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.review-form {
+    gap: 4px;
+}
+.dte-generator-form {
+    gap: 4px;
+}
+
+/* --- MODAL REUTILIZABLE --- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 16px;
+}
+.modal {
+    max-width: 440px;
+    width: 100%;
+    padding: 24px;
+}
+.modal h3 {
+    margin-bottom: 12px;
+}
+.modal p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin-bottom: 20px;
+}
+.modal-actions {
+    justify-content: flex-end;
+}
+
+/* --- ACCESIBILIDAD --- */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+button:focus:not(:focus-visible) {
+    outline: none;
+}
+
 /* --- RESPONSIVE LAYOUT --- */
 @media (max-width: 1250px) {
     .app-container { padding: 12px; gap: 12px; }
@@ -900,12 +1015,16 @@ body {
     .sidebar .nav-item { justify-content: center; }
     .main-content { min-width: 0; overflow: visible; }
     .middle-panel { grid-template-columns: 1fr; }
+    .dash-counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .app-controls-footer { flex-wrap: wrap; }
 }
 
 @media (max-width: 600px) {
     .app-container { padding: 8px; gap: 8px; }
     .kpi-grid { grid-template-columns: 1fr; }
+    .dash-counters { grid-template-columns: 1fr; }
+    .scope-segmented { width: 100%; }
+    .segment-btn { flex: 1; }
     .top-header { padding: 12px 8px; }
     .header-title h2 { font-size: 1.2rem; }
     .controls-bar { flex-wrap: wrap; }

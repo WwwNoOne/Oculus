@@ -122,8 +122,6 @@ class Api:
 
     def get_recovery_backups(self):
         """Lista los respaldos de recuperacion con tamano, fecha y conteo de archivos."""
-        import datetime
-
         backups = []
         seen = set()
         for alias in self.get_clients(include_recovery=True):
@@ -275,7 +273,10 @@ class Api:
                 selected_path = client_path / month_year
                 if selected_path.exists():
                     json_count = len(list(selected_path.glob("*.json")))
-                    pdf_count = len(list(selected_path.glob("*.pdf")))
+                    # Los PDF viven en 05_Respaldo_PDF/<cliente>/<mes>/, no junto a los JSON.
+                    pdf_backup = CARPETA_RESPALDO_PDF / client_name / month_year
+                    if pdf_backup.exists():
+                        pdf_count = len(list(pdf_backup.glob("*.pdf")))
 
         return {
             "data_dir": str(DATA_DIR),
@@ -327,14 +328,47 @@ class Api:
     def get_companies(self, include_recovery=True):
         return db.get_companies(include_recovery=include_recovery)
 
+    @staticmethod
+    def _validar_cuenta(email, server, port):
+        import re
+
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (email or "").strip()):
+            return False, "Formato de correo inválido."
+        try:
+            puerto = int(port)
+        except (TypeError, ValueError):
+            return False, "Puerto inválido."
+        if not 1 <= puerto <= 65535:
+            return False, "Puerto fuera de rango (1-65535)."
+        if not (server or "").strip():
+            return False, "Servidor requerido."
+        return True, ""
+
     def add_company(self, alias):
         return db.add_company(alias)
 
     def add_email(self, client, email, password_enc, server, port=993, start_date='2026-05-01'):
+        valid, message = self._validar_cuenta(email, server, port)
+        if not valid:
+            return False, message
+        if not (password_enc or "").strip():
+            return False, "La contraseña es obligatoria."
         success, msg = db.add_email(client, email, password_enc, server, port, start_date)
         return success, msg
-        
+
     def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01'):
+        valid, message = self._validar_cuenta(new_email, new_server, new_port)
+        if not valid:
+            return False, message
+        # Campo de contraseña vacío = mantener la actual (nunca se precarga en la UI).
+        if not (new_password or "").strip():
+            current = next(
+                (item for item in db.get_all_emails() if item.get("email") == old_email),
+                None,
+            )
+            if not current:
+                return False, "La cuenta a editar no existe."
+            new_password = current.get("password_encrypted", "")
         success, msg = db.update_email(old_email, new_client, new_email, new_password, new_server, new_port, new_start_date)
         return success, msg
         
@@ -441,7 +475,7 @@ class Api:
         settings_file = DATA_DIR / "settings.json"
         with open(settings_file, "w", encoding="utf-8") as f:
             json.dump(secure_data, f, indent=4)
-        print("Configuración de API encriptada y guardada exitosamente.")
+        print("Configuración encriptada y guardada exitosamente.")
         return True
         
     def get_settings(self):
@@ -460,11 +494,13 @@ class Api:
                         settings["gemini"] = decrypt_data(settings["gemini"])
                     if "deepseek" in settings:
                         settings["deepseek"] = decrypt_data(settings["deepseek"])
+                    # Claves de UI (p. ej. ultima carpeta de destino) pasan tal cual.
+                    settings.setdefault("last_excel_dir", "")
                     return settings
             except Exception:
                 pass
-                
-        return {"gemini": "", "deepseek": ""}
+
+        return {"gemini": "", "deepseek": "", "last_excel_dir": ""}
 
     # --- EXPLORER ---
     def get_other_documents(self, client_filter="", date_filter=""):

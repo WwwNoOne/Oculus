@@ -65,6 +65,7 @@ class ExcelService:
     def _stem_key(filename: str) -> str:
         """Clave de emparejamiento JSON<->PDF: minusculas, sin _standard ni sufijos _N."""
         stem = Path(filename).stem.lower()
+        stem = re.sub(r"(?:_\d+)+$", "", stem)
         stem = re.sub(r"_standard$", "", stem)
         stem = re.sub(r"(?:_\d+)+$", "", stem)
         return stem
