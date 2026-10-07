@@ -171,6 +171,10 @@
                             <select id="sel-client" class="premium-input">
                                 <option value="">-- Seleccione un cliente --</option>
                             </select>
+                            <label class="form-hint" style="display:flex; gap:8px; align-items:center; cursor:pointer; margin-top:8px;">
+                                <input type="checkbox" id="toggle-show-recovery">
+                                Mostrar respaldos de recuperación
+                            </label>
                         </div>
                         <div class="form-group">
                             <label>Seleccionar Período (Año - Mes)</label>
@@ -207,7 +211,7 @@
                         </div>
                         <div class="form-group">
                             <label>Alias de respaldo</label>
-                            <input type="text" id="recovery-alias" class="premium-input" value="RP1Pineli" placeholder="Ej. RP1Pineli">
+                            <input type="text" id="recovery-alias" class="premium-input" placeholder="Ej. RP1Pineli">
                         </div>
                         <div class="form-group">
                             <label>Desde</label>
@@ -217,11 +221,29 @@
                             <label>Hasta (exclusivo)</label>
                             <input type="date" id="recovery-end-date" class="premium-input" value="2026-05-01">
                         </div>
+                        <div class="form-group">
+                            <label style="display:flex; gap:8px; align-items:center; cursor:pointer; color: var(--text-muted);">
+                                <input type="checkbox" id="recovery-auto-cleanup">
+                                Eliminar automáticamente la copia de trabajo después de exportar
+                            </label>
+                        </div>
                         <div class="form-actions">
                             <button class="btn btn-warning" id="btn-start-recovery" type="button"><i class="fa-solid fa-download"></i> Iniciar recuperación</button>
                             <button class="btn btn-outline" id="btn-stop-recovery" type="button" disabled><i class="fa-solid fa-stop"></i> Detener</button>
                         </div>
                         <small id="recovery-status" class="form-hint"></small>
+                    </div>
+                </div>
+                <div class="widget glass-panel widget-large">
+                    <div class="widget-header space-between">
+                        <h3><i class="fa-solid fa-box-archive"></i> Respaldos existentes</h3>
+                        <button class="icon-btn" id="btn-refresh-backups" title="Refrescar respaldos" aria-label="Refrescar respaldos"><i class="fa-solid fa-rotate"></i></button>
+                    </div>
+                    <div class="widget-body" id="recovery-backups-list">
+                        <div class="empty-state">
+                            <i class="fa-solid fa-box-open"></i>
+                            <p>No hay respaldos de recuperación.</p>
+                        </div>
                     </div>
                 </div>
             </div>

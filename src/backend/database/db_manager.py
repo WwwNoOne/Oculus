@@ -59,6 +59,16 @@ class DBManager:
                 cursor.execute("ALTER TABLE email_accounts ADD COLUMN start_date TEXT DEFAULT '2026-05-01'")
             except sqlite3.OperationalError:
                 pass # La columna ya existe
+            # Los alias de recuperacion se marcan como 'recovery' para no
+            # ensuciar la vista de Gestion de DTEs.
+            try:
+                cursor.execute("ALTER TABLE companies ADD COLUMN kind TEXT DEFAULT 'normal'")
+            except sqlite3.OperationalError:
+                pass # La columna ya existe
+            try:
+                cursor.execute("UPDATE companies SET kind = 'normal' WHERE kind IS NULL OR TRIM(kind) = ''")
+            except sqlite3.OperationalError:
+                pass
 
             cursor.execute('''
                 INSERT OR IGNORE INTO companies (alias)
@@ -75,12 +85,57 @@ class DBManager:
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-    def get_companies(self):
+    def get_companies(self, include_recovery=True):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, alias, created_at FROM companies ORDER BY alias COLLATE NOCASE")
+            try:
+                if include_recovery:
+                    cursor.execute("SELECT id, alias, created_at FROM companies ORDER BY alias COLLATE NOCASE")
+                else:
+                    cursor.execute(
+                        "SELECT id, alias, created_at FROM companies "
+                        "WHERE kind IS NULL OR kind <> 'recovery' ORDER BY alias COLLATE NOCASE"
+                    )
+            except sqlite3.OperationalError:
+                cursor.execute("SELECT id, alias, created_at FROM companies ORDER BY alias COLLATE NOCASE")
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_company_kind(self, alias):
+        """Retorna 'recovery', 'normal' o None si el alias no esta registrado."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT kind FROM companies WHERE alias = ? COLLATE NOCASE", ((alias or "").strip(),))
+                row = cursor.fetchone()
+            except sqlite3.OperationalError:
+                return None
+            if not row:
+                return None
+            return (row[0] or "normal").strip().lower() or "normal"
+
+    def set_company_kind(self, alias, kind):
+        """Registra el alias si no existe y le asigna el tipo ('normal' | 'recovery')."""
+        alias = (alias or "").strip()
+        kind = "recovery" if (kind or "").strip().lower() == "recovery" else "normal"
+        if not alias:
+            return False
+        with self._get_connection() as conn:
+            try:
+                conn.execute("INSERT OR IGNORE INTO companies (alias, kind) VALUES (?, ?)", (alias, kind))
+                conn.execute("UPDATE companies SET kind = ? WHERE alias = ? COLLATE NOCASE", (kind, alias))
+                conn.commit()
+                return True
+            except sqlite3.OperationalError:
+                return False
+
+    def remove_company(self, alias):
+        """Elimina el registro del alias. Nunca toca email_accounts."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM companies WHERE alias = ? COLLATE NOCASE", ((alias or "").strip(),))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def add_company(self, alias):
         alias = (alias or "").strip()
@@ -142,7 +197,10 @@ class DBManager:
     def update_email_status(self, email, active: int):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE email_accounts SET active = ? WHERE email = ?", (active, email))
+            cursor.execute(
+                "UPDATE email_accounts SET active = ?, last_sync = CURRENT_TIMESTAMP WHERE email = ?",
+                (active, email),
+            )
             conn.commit()
                 
     def log_extraction(self, filename, status, dte_code=None, error_msg=None):

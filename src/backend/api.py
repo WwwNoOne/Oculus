@@ -47,7 +47,7 @@ class Api:
         self.orchestrator.stop(wait=True)
         return True, "Proceso detenido correctamente."
 
-    def start_recovery(self, account_email, target_alias, start_date, end_date):
+    def start_recovery(self, account_email, target_alias, start_date, end_date, auto_cleanup=False):
         import threading
         from datetime import date
         from src.backend.database.db_manager import db
@@ -66,7 +66,11 @@ class Api:
         if not account or not target_alias.strip():
             return False, "Seleccione una cuenta y un alias de respaldo."
 
-        recovery_dir = CARPETA_DESCARGAS_RESPALDO / target_alias.strip()
+        target_alias = target_alias.strip()
+        # Marcar el alias como recuperacion para que no ensucie Gestion de DTEs.
+        db.set_company_kind(target_alias, "recovery")
+
+        recovery_dir = CARPETA_DESCARGAS_RESPALDO / target_alias
         self.recovery_stop_requested = False
         self.recovery_status = {"status": "RUNNING", "message": "Recuperación en curso"}
 
@@ -74,7 +78,7 @@ class Api:
             try:
                 mail = EmailService(str(recovery_dir), str(recovery_dir / "adjuntos_otros"))
                 result = mail.descargar_correos(
-                    cuenta=target_alias.strip(), servidor=account["server"], puerto=account["port"],
+                    cuenta=target_alias, servidor=account["server"], puerto=account["port"],
                     usuario=account["email"], password=account["password_encrypted"],
                     protocolo="POP3" if account["port"] == 995 else "IMAP", estado_key=account["email"],
                     start_date=start_date, end_date=end_date,
@@ -82,9 +86,14 @@ class Api:
                 )
                 if not self.recovery_stop_requested:
                     result.update(self.dte_service.process_downloads(
-                        client_filter=target_alias.strip(), source_dir=recovery_dir,
-                        destination_alias=target_alias.strip(),
+                        client_filter=target_alias, source_dir=recovery_dir,
+                        destination_alias=target_alias,
                     ))
+                if auto_cleanup and not self.recovery_stop_requested:
+                    # Solo se elimina la copia de trabajo (descargas de respaldo del alias).
+                    import shutil
+                    shutil.rmtree(recovery_dir, ignore_errors=True)
+                    result["cleanup"] = "copia de trabajo eliminada"
                 self.recovery_status = {"status": "IDLE", "message": f"Recuperación finalizada: {result}"}
             except Exception as exc:
                 self.recovery_status = {"status": "ERROR", "message": str(exc)}
@@ -100,9 +109,115 @@ class Api:
         self.recovery_stop_requested = True
         return True, "La recuperación terminará el mensaje actual."
     
-    def get_clients(self):
-        if not CARPETA_PROCESADOS.exists(): return []
-        return sorted(f.name for f in CARPETA_PROCESADOS.iterdir() if f.is_dir())
+    def get_clients(self, include_recovery=False):
+        if not CARPETA_PROCESADOS.exists():
+            return []
+        clients = sorted(f.name for f in CARPETA_PROCESADOS.iterdir() if f.is_dir())
+        if include_recovery:
+            return clients
+        # Los alias de recuperacion quedan ocultos salvo que se pidan explicitamente.
+        return [c for c in clients if db.get_company_kind(c) != "recovery"]
+
+    def get_recovery_backups(self):
+        """Lista los respaldos de recuperacion con tamano, fecha y conteo de archivos."""
+        import datetime
+
+        backups = []
+        seen = set()
+        for alias in self.get_clients(include_recovery=True):
+            if db.get_company_kind(alias) != "recovery":
+                continue
+            seen.add(alias.casefold())
+            backups.append(self._describe_backup(alias))
+        # Alias marcados en BD pero sin carpeta aun, o carpetas de respaldo sueltas.
+        if CARPETA_DESCARGAS_RESPALDO.exists():
+            for folder in CARPETA_DESCARGAS_RESPALDO.iterdir():
+                if folder.is_dir() and folder.name.casefold() not in seen:
+                    seen.add(folder.name.casefold())
+                    backups.append(self._describe_backup(folder.name))
+        return sorted(backups, key=lambda b: b["alias"].lower())
+
+    def _describe_backup(self, alias):
+        roots = [
+            CARPETA_PROCESADOS / alias,
+            CARPETA_OTROS_DTES / alias,
+            CARPETA_RESPALDO_PDF / alias,
+            CARPETA_DESCARGAS_RESPALDO / alias,
+            CARPETA_DUPLICADOS / alias,
+        ]
+        total_files = 0
+        total_bytes = 0
+        latest_mtime = None
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                total_files += 1
+                try:
+                    total_bytes += path.stat().st_size
+                    mtime = path.stat().st_mtime
+                    if latest_mtime is None or mtime > latest_mtime:
+                        latest_mtime = mtime
+                except OSError:
+                    pass
+        return {
+            "alias": alias,
+            "files": total_files,
+            "size_bytes": total_bytes,
+            "updated": latest_mtime,
+        }
+
+    def delete_client_data(self, alias, confirm=True, force=False):
+        """Elimina las carpetas de trabajo de un alias y su registro en companies.
+
+        Reglas de seguridad:
+        - confirm debe ser True (confirmacion previa en la UI).
+        - Solo alias de tipo 'recovery', salvo force=True con doble confirmacion en UI.
+        - El alias no puede contener '..', '/' ni '\\' y la ruta resuelta debe
+          quedar dentro de DATA_DIR.
+        - Nunca toca la BD de cuentas de correo (email_accounts intacta).
+        """
+        import shutil
+
+        alias = (alias or "").strip()
+        if not confirm:
+            return False, "Se requiere confirmación explícita para eliminar datos."
+        if not alias or alias in {".", ".."} or ".." in alias or "/" in alias or "\\" in alias:
+            return False, "Alias inválido."
+        kind = db.get_company_kind(alias)
+        if kind != "recovery" and not force:
+            return False, (
+                f"'{alias}' no es un respaldo de recuperación. "
+                "Su eliminación requiere autorización explícita (force)."
+            )
+
+        data_root = DATA_DIR.resolve()
+        targets = [
+            CARPETA_PROCESADOS / alias,
+            CARPETA_OTROS_DTES / alias,
+            CARPETA_RESPALDO_PDF / alias,
+            CARPETA_DESCARGAS_RESPALDO / alias,
+            CARPETA_DUPLICADOS / alias,
+        ]
+        resolved_targets = []
+        for target in targets:
+            try:
+                resolved = target.resolve()
+            except OSError:
+                return False, "No se pudo validar la ruta del alias."
+            if resolved != data_root and data_root not in resolved.parents:
+                return False, "Ruta fuera del área de datos. Operación rechazada."
+            resolved_targets.append((target, resolved))
+
+        removed_files = 0
+        for target, _resolved in resolved_targets:
+            if target.exists():
+                removed_files += sum(1 for p in target.rglob("*") if p.is_file())
+                shutil.rmtree(target, ignore_errors=False)
+        db.remove_company(alias)
+        return True, f"Respaldo '{alias}' eliminado: {removed_files} archivos. Esta acción no se puede deshacer."
         
     def get_months(self, client_name):
         client_path = CARPETA_PROCESADOS / client_name
@@ -207,8 +322,8 @@ class Api:
     def get_emails(self):
         return db.get_all_emails()
 
-    def get_companies(self):
-        return db.get_companies()
+    def get_companies(self, include_recovery=True):
+        return db.get_companies(include_recovery=include_recovery)
 
     def add_company(self, alias):
         return db.add_company(alias)

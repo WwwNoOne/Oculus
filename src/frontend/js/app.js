@@ -69,6 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     loadSettings();
                 } else if(targetView === "recovery") {
                     loadRecoveryAccounts();
+                    loadRecoveryBackups();
                 }
             } else {
                 showToast(`Vista ${targetView} en desarrollo.`);
@@ -118,7 +119,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function loadClients() {
         if(window.pywebview && window.pywebview.api) {
-            const clients = await window.pywebview.api.get_clients();
+            const toggle = document.getElementById("toggle-show-recovery");
+            const includeRecovery = toggle ? toggle.checked : false;
+            const clients = await window.pywebview.api.get_clients(includeRecovery);
             selClient.innerHTML = '<option value="">-- Seleccione un cliente --</option>';
             clients.forEach(c => {
                 selClient.innerHTML += `<option value="${c}">${c}</option>`;
@@ -137,6 +140,16 @@ document.addEventListener("DOMContentLoaded", () => {
         const periods = diagnostics.periods.length ? diagnostics.periods.join(", ") : "ninguno";
         const selected = diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir;
         excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | JSON del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
+    }
+
+    const toggleShowRecovery = document.getElementById("toggle-show-recovery");
+    if(toggleShowRecovery) {
+        toggleShowRecovery.addEventListener("change", () => {
+            selClient.value = "";
+            selMonth.innerHTML = '<option value="">-- Seleccione un cliente primero --</option>';
+            selMonth.disabled = true;
+            loadClients();
+        });
     }
 
     selClient.addEventListener("change", async (e) => {
@@ -411,12 +424,73 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    function formatBytes(total) {
+        if(!total) return "0 B";
+        const units = ["B", "KB", "MB", "GB"];
+        let value = total;
+        let unit = 0;
+        while(value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+        return `${value.toFixed(1)} ${units[unit]}`;
+    }
+
+    async function loadRecoveryBackups() {
+        const listContainer = document.getElementById("recovery-backups-list");
+        if(!listContainer || !window.pywebview || !window.pywebview.api || !window.pywebview.api.get_recovery_backups) return;
+        listContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-spinner fa-spin"></i><p>Cargando respaldos...</p></div>';
+        try {
+            const backups = await window.pywebview.api.get_recovery_backups();
+            if(!backups || backups.length === 0) {
+                listContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-box-open"></i><p>No hay respaldos de recuperación.</p></div>';
+                return;
+            }
+            listContainer.innerHTML = '<ul class="activity-list"></ul>';
+            const ul = listContainer.querySelector("ul");
+            backups.forEach(backup => {
+                const dateStr = backup.updated ? new Date(backup.updated * 1000).toLocaleString() : "sin fecha";
+                const li = document.createElement("li");
+                li.className = "activity-item";
+                li.style.justifyContent = "space-between";
+                li.innerHTML = `
+                    <div style="display:flex; gap:12px; align-items:center;">
+                        <i class="fa-solid fa-box-archive" style="color: var(--warning);"></i>
+                        <div>
+                            <strong style="display:block;">${backup.alias}</strong>
+                            <small class="text-muted">${backup.files} archivos · ${formatBytes(backup.size_bytes)} · ${dateStr}</small>
+                        </div>
+                    </div>
+                    <button class="icon-btn btn-delete-backup" data-alias="${backup.alias}" title="Eliminar respaldo" aria-label="Eliminar respaldo ${backup.alias}" style="color: var(--danger);"><i class="fa-solid fa-trash"></i></button>`;
+                ul.appendChild(li);
+            });
+            listContainer.querySelectorAll(".btn-delete-backup").forEach(btn => {
+                btn.addEventListener("click", async () => {
+                    const alias = btn.getAttribute("data-alias");
+                    if(confirm(`Se eliminarán los archivos del respaldo '${alias}'. Esta acción no se puede deshacer. ¿Continuar?`)) {
+                        try {
+                            const res = await window.pywebview.api.delete_client_data(alias, true, false);
+                            showToast(res[1]);
+                            if(res[0]) { loadRecoveryBackups(); }
+                        } catch(e) {
+                            showToast("Error al eliminar el respaldo.");
+                        }
+                    }
+                });
+            });
+        } catch(e) {
+            listContainer.innerHTML = '<div class="empty-state"><p>Error al cargar respaldos.</p></div>';
+        }
+    }
+
+    const btnRefreshBackups = document.getElementById("btn-refresh-backups");
+    if(btnRefreshBackups) btnRefreshBackups.addEventListener("click", loadRecoveryBackups);
+
     if(btnStartRecovery) btnStartRecovery.addEventListener("click", async () => {
+        const autoCleanupEl = document.getElementById("recovery-auto-cleanup");
         const result = await window.pywebview.api.start_recovery(
             recoveryAccount.value,
             document.getElementById("recovery-alias").value,
             document.getElementById("recovery-start-date").value,
-            document.getElementById("recovery-end-date").value
+            document.getElementById("recovery-end-date").value,
+            autoCleanupEl ? autoCleanupEl.checked : false
         );
         showToast(result[1]);
         if(result[0]) {
