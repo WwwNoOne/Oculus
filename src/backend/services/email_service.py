@@ -165,35 +165,43 @@ class EmailService:
             if end_date:
                 criterio_args["date_lt"] = datetime.date.fromisoformat(end_date)
             criterio = AND(**criterio_args)
-            
-            for msg in mailbox.fetch(criterio, mark_seen=False):
-                if str(msg.uid) in estado_descargas[estado_key]:
-                    continue
-                    
-                resultados["revisados"] += 1
+
+            try:
+                for msg in mailbox.fetch(criterio, mark_seen=False):
+                    if str(msg.uid) in estado_descargas[estado_key]:
+                        continue
+
+                    resultados["revisados"] += 1
+                    try:
+                        adjuntos_raw = [{'filename': att.filename, 'content_type': att.content_type, 'payload': att.payload} for att in msg.attachments]
+
+                        dt = msg.date if msg.date else datetime.datetime.now()
+                        antes = resultados["descargados"] + resultados.get("adjuntos_otros", 0)
+                        self._procesar_mensaje_generico(cuenta, msg.uid, msg.subject, dt, adjuntos_raw, resultados)
+
+                        if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
+                            estado_descargas[estado_key].append(str(msg.uid))
+                        if should_stop and should_stop():
+                            break
+                    except Exception as ex:
+                        print(f"  [!] Error procesando correo IMAP UID {msg.uid}: {ex}")
+                        resultados["errores"] += 1
+            finally:
+                # Guardar progreso aunque haya error a mitad del bucle.
                 try:
-                    adjuntos_raw = [{'filename': att.filename, 'content_type': att.content_type, 'payload': att.payload} for att in msg.attachments]
-                    
-                    dt = msg.date if msg.date else datetime.datetime.now()
-                    antes = resultados["descargados"] + resultados.get("adjuntos_otros", 0)
-                    self._procesar_mensaje_generico(cuenta, msg.uid, msg.subject, dt, adjuntos_raw, resultados)
-                    
-                    if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
-                        estado_descargas[estado_key].append(str(msg.uid))
-                    if should_stop and should_stop():
-                        break
-                except Exception as ex:
-                    print(f"  [!] Error procesando correo IMAP UID {msg.uid}: {ex}")
-                    resultados["errores"] += 1
-                    
-            with open(estado_file, "w") as f:
-                json.dump(estado_descargas, f)
-                
-            mailbox.logout()
+                    with open(estado_file, "w") as f:
+                        json.dump(estado_descargas, f)
+                except Exception as save_error:
+                    print(f"  [!] No se pudo guardar sync_estado.json: {save_error}")
+                try:
+                    if mailbox is not None:
+                        mailbox.logout()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[!] Error IMAP en {cuenta}: {e}")
             raise e
-            
+
         return resultados
 
     def _descargar_pop3(self, cuenta: str, servidor: str, puerto: int, usuario: str, password: str, estado_key: str, start_date: str, end_date: str = None, should_stop=None):
@@ -251,68 +259,76 @@ class EmailService:
             for item in items:
                 idx, uid = item.decode().split(' ')
                 uidls[int(idx)] = uid
-                
+
             num_msgs = len(conn.list()[1])
             print(f"  [POP3] {num_msgs} mensajes en el servidor.")
-            
-            for i in range(1, num_msgs + 1):
-                uid = uidls.get(i, str(i))
-                
-                if uid in estado_descargas[estado_key]:
-                    continue
-                    
-                resultados["revisados"] += 1
-                
-                # Descargar mensaje de forma segura
+
+            try:
+                for i in range(1, num_msgs + 1):
+                    uid = uidls.get(i, str(i))
+
+                    if uid in estado_descargas[estado_key]:
+                        continue
+
+                    resultados["revisados"] += 1
+
+                    # Descargar mensaje de forma segura
+                    try:
+                        _, lineas, _ = conn.retr(i)
+                        raw_email = b'\r\n'.join(lineas)
+                        msg = email.message_from_bytes(raw_email)
+
+                        date_str = msg.get("Date")
+                        if date_str:
+                            dt = email.utils.parsedate_to_datetime(date_str)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=datetime.timezone.utc)
+                            if dt < fecha_corte:
+                                estado_descargas[estado_key].append(uid)
+                                continue
+                            if fecha_fin and dt >= fecha_fin:
+                                estado_descargas[estado_key].append(uid)
+                                continue
+                        else:
+                            dt = datetime.datetime.now()
+
+                        subject = str(msg.get("Subject", ""))
+
+                        adjuntos_raw = []
+                        for part in msg.walk():
+                            if part.get_content_maintype() == 'multipart': continue
+                            filename = part.get_filename()
+                            if not filename: continue
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                adjuntos_raw.append({'filename': filename, 'content_type': part.get_content_type(), 'payload': payload})
+
+                        antes = resultados["descargados"] + resultados.get("adjuntos_otros", 0)
+                        self._procesar_mensaje_generico(cuenta, uid, subject, dt, adjuntos_raw, resultados)
+                        if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
+                            estado_descargas[estado_key].append(uid)
+                        if should_stop and should_stop():
+                            break
+
+                    except Exception as ex:
+                        print(f"  [!] Error procesando correo UID {uid}: {ex}")
+                        # No añadimos a estado_descargas para que intente de nuevo en el futuro, o podríamos añadirlo para saltarlo
+                        resultados["errores"] += 1
+            finally:
+                # Guardar progreso aunque haya error a mitad del bucle.
                 try:
-                    _, lineas, _ = conn.retr(i)
-                    raw_email = b'\r\n'.join(lineas)
-                    msg = email.message_from_bytes(raw_email)
-                    
-                    date_str = msg.get("Date")
-                    if date_str:
-                        dt = email.utils.parsedate_to_datetime(date_str)
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=datetime.timezone.utc)
-                        if dt < fecha_corte:
-                            estado_descargas[estado_key].append(uid)
-                            continue
-                        if fecha_fin and dt >= fecha_fin:
-                            estado_descargas[estado_key].append(uid)
-                            continue
-                    else:
-                        dt = datetime.datetime.now()
-                        
-                    subject = str(msg.get("Subject", ""))
-                    
-                    adjuntos_raw = []
-                    for part in msg.walk():
-                        if part.get_content_maintype() == 'multipart': continue
-                        filename = part.get_filename()
-                        if not filename: continue
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            adjuntos_raw.append({'filename': filename, 'content_type': part.get_content_type(), 'payload': payload})
-                            
-                    antes = resultados["descargados"] + resultados.get("adjuntos_otros", 0)
-                    self._procesar_mensaje_generico(cuenta, uid, subject, dt, adjuntos_raw, resultados)
-                    if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
-                        estado_descargas[estado_key].append(uid)
-                    if should_stop and should_stop():
-                        break
-                    
-                except Exception as ex:
-                    print(f"  [!] Error procesando correo UID {uid}: {ex}")
-                    # No añadimos a estado_descargas para que intente de nuevo en el futuro, o podríamos añadirlo para saltarlo
-                    resultados["errores"] += 1
-                
-            conn.quit()
-            
-            with open(estado_file, "w") as f:
-                json.dump(estado_descargas, f)
-                
+                    with open(estado_file, "w") as f:
+                        json.dump(estado_descargas, f)
+                except Exception as save_error:
+                    print(f"  [!] No se pudo guardar sync_estado.json: {save_error}")
+                try:
+                    if conn is not None:
+                        conn.quit()
+                except Exception:
+                    pass
+
         except Exception as e:
             print(f"[!] Error POP3 en {cuenta}: {e}")
             raise e
-            
+
         return resultados

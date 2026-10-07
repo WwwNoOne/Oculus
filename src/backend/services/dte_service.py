@@ -3,7 +3,7 @@ import json
 import shutil
 import re
 from pathlib import Path
-from src.backend.utils.config import CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_RESPALDO_PDF
+from src.backend.utils.config import CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_RESPALDO_PDF, CARPETA_DUPLICADOS
 from src.backend.database.db_manager import db
 from src.backend.services.ocr_service import OCRService
 from src.backend.utils.json_utils import extract_identificacion
@@ -29,6 +29,46 @@ class DTEService:
     def _get_identificacion(self, data: dict):
         """Obtiene identificacion tanto de DTE directos como de respuestas anidadas."""
         return extract_identificacion(data)
+
+    def _codigo(self, data) -> str:
+        """codigoGeneracion normalizado (mayusculas, sin espacios) para deduplicar."""
+        if not isinstance(data, dict):
+            return ""
+        identificacion = self._get_identificacion(data)
+        if not isinstance(identificacion, dict):
+            return ""
+        return str(identificacion.get("codigoGeneracion", "") or "").strip().upper()
+
+    def _es_duplicado(self, data, subfolder: str) -> bool:
+        """Revisa si el codigoGeneracion ya existe en procesados u otros del mismo subfolder."""
+        codigo = self._codigo(data)
+        if not codigo:
+            return False
+        for base in (CARPETA_PROCESADOS, CARPETA_OTROS_DTES):
+            folder = base / subfolder
+            if not folder.exists():
+                continue
+            for existing in folder.glob("*.json"):
+                if not existing.is_file():
+                    continue
+                try:
+                    try:
+                        existing_data = json.loads(existing.read_text(encoding="utf-8-sig"))
+                    except UnicodeDecodeError:
+                        existing_data = json.loads(existing.read_text(encoding="latin-1"))
+                except Exception:
+                    continue
+                if self._codigo(existing_data) == codigo:
+                    return True
+        return False
+
+    def _mover_a_duplicados(self, source_paths: list, subfolder: str):
+        """Mueve archivos ya procesados antes a 08_Duplicados/<subfolder> sin borrarlos."""
+        target_dir = CARPETA_DUPLICADOS / subfolder
+        for sp in source_paths:
+            path = Path(sp)
+            if path.exists() and path.is_file():
+                self._mover_sin_sobrescribir(path, target_dir)
 
     def _get_month_from_filename(self, filename: str) -> str:
         """Usa la fecha del nombre ALIAS_UID_DDMMYYYY como respaldo."""
@@ -67,14 +107,15 @@ class DTEService:
         )
 
     def _mover_archivos(self, source_paths: list, dest_folder: Path, subfolder_name: str = None):
-        """Mueve una lista de archivos a una carpeta destino, opcionalmente dentro de una subcarpeta (mes/año)"""
+        """Mueve una lista de archivos a una carpeta destino, opcionalmente dentro de una subcarpeta (mes/año).
+
+        Usa _mover_sin_sobrescribir para no fallar ni sobrescribir si el nombre ya existe.
+        """
         target_dir = dest_folder / subfolder_name if subfolder_name else dest_folder
-        target_dir.mkdir(parents=True, exist_ok=True)
-        
         for sp in source_paths:
             path = Path(sp)
-            if path.exists():
-                shutil.move(str(path), str(target_dir / path.name))
+            if path.exists() and path.is_file():
+                self._mover_sin_sobrescribir(path, target_dir)
 
     def _mover_sin_sobrescribir(self, source_path: Path, dest_folder: Path) -> Path:
         dest_folder.mkdir(parents=True, exist_ok=True)
@@ -174,10 +215,15 @@ class DTEService:
             return f"{partes[0]}_{partes[1]}" # Devuelve ALIAS_UID como agrupador seguro
         return "UNKNOWN"
 
-    def process_downloads(self, client_filter=None, source_dir=None, destination_alias=None, should_stop=None):
+    def process_downloads(self, client_filter=None, source_dir=None, destination_alias=None, should_stop=None, on_progress=None):
         """
         Escanea la carpeta de descargas, empareja PDFs con JSONs usando el UID del correo 
         o procesa PDFs huérfanos mediante OCR/IA.
+
+        Deduplica por codigoGeneracion: si el documento ya existe en procesados u otros
+        del mismo subfolder, PDF y JSON se mueven a 08_Duplicados (no se borran).
+
+        on_progress(done, total): callback opcional para reportar avance real.
         """
         print("[*] Iniciando procesamiento matemático de descargas...")
         download_dir = Path(source_dir) if source_dir else CARPETA_DESCARGAS
@@ -196,7 +242,16 @@ class DTEService:
             and not f.name.lower().endswith('_estado.json')
         ]
         
-        resultados = {"procesados_json": 0, "procesados_ocr": 0, "otros": 0, "errores": 0}
+        resultados = {"procesados_json": 0, "procesados_ocr": 0, "otros": 0, "errores": 0, "duplicados": 0}
+        total_docs = len(pdfs) + len(jsons)
+        done_docs = 0
+
+        def _report_progress():
+            if on_progress:
+                try:
+                    on_progress(done_docs, total_docs)
+                except Exception:
+                    pass
         
         # Agrupar JSONs por ALIAS_UID
         jsons_por_uid = {}
@@ -265,6 +320,8 @@ class DTEService:
                 except Exception as e:
                     db.log_extraction(pdf.name, "ERROR", error_msg=str(e))
                     resultados["errores"] += 1
+                    done_docs += 1
+                    _report_progress()
                     continue
             # Filtrado por tipoDte (03, 05, 06, 14)
             if json_asociado_data:
@@ -297,6 +354,19 @@ class DTEService:
 
                 json_para_mover = [json_asociado_path] if json_asociado_path and json_asociado_path.exists() else []
 
+                # Deduplicacion: si el codigoGeneracion ya existe, conservar en 08_Duplicados.
+                # Esto tambien evita que un PDF huerfano genere un _standard.json duplicado
+                # del mismo documento (caso "1 correo con 2 PDF y 1 JSON").
+                if json_asociado_data and self._es_duplicado(json_asociado_data, subfolder):
+                    self._mover_a_duplicados([pdf] + json_para_mover, subfolder)
+                    db.log_extraction(pdf.name, "DUPLICATE", dte_code=tipo_dte)
+                    resultados["duplicados"] += 1
+                    done_docs += 1
+                    _report_progress()
+                    if should_stop and should_stop():
+                        break
+                    continue
+
                 if tipo_dte in self.target_codes:
                     self._mover_archivos([pdf], CARPETA_RESPALDO_PDF, subfolder)
                     self._mover_archivos(json_para_mover, CARPETA_PROCESADOS, subfolder)
@@ -311,6 +381,8 @@ class DTEService:
                     self._mover_archivos(json_para_mover, CARPETA_OTROS_DTES, subfolder)
                     db.log_extraction(pdf.name, "OTHER_DTE", dte_code=tipo_dte)
                     resultados["otros"] += 1
+                done_docs += 1
+                _report_progress()
                 if should_stop and should_stop():
                     break
 
@@ -319,7 +391,14 @@ class DTEService:
         for j in jsons_huerfanos:
             print(f"[*] Estandarizando JSON huérfano: {j.name}")
             json_asociado_data = self._leer_json_estandarizado(j)
-            
+
+            if not json_asociado_data:
+                db.log_extraction(j.name, "ERROR", error_msg="JSON ilegible o vacio")
+                resultados["errores"] += 1
+                done_docs += 1
+                _report_progress()
+                continue
+
             if json_asociado_data:
                 with open(j, 'w', encoding='utf-8') as f:
                     json.dump(json_asociado_data, f, indent=4)
@@ -347,6 +426,18 @@ class DTEService:
                 cliente_folder = "".join(x for x in cliente if x.isalnum() or x in " -_").strip()
                 subfolder = f"{cliente_folder}/{mes_anio}"
 
+                # Deduplicacion: un JSON huerfano cuyo codigoGeneracion ya existe
+                # (p. ej. el segundo correo con el mismo DTE) va a 08_Duplicados.
+                if self._es_duplicado(json_asociado_data, subfolder):
+                    self._mover_a_duplicados([j], subfolder)
+                    db.log_extraction(j.name, "DUPLICATE", dte_code=tipo_dte)
+                    resultados["duplicados"] += 1
+                    done_docs += 1
+                    _report_progress()
+                    if should_stop and should_stop():
+                        break
+                    continue
+
                 if tipo_dte in self.target_codes:
                     self._mover_archivos([j], CARPETA_PROCESADOS, subfolder)
                     db.log_extraction(j.name, "VALID_DTE", dte_code=tipo_dte)
@@ -355,10 +446,14 @@ class DTEService:
                     if self._is_ai_garbage(json_asociado_data, identificacion, tipo_dte):
                         j.unlink(missing_ok=True)
                         db.log_extraction(j.name, "DISCARDED_AI_JSON", dte_code=tipo_dte)
+                        done_docs += 1
+                        _report_progress()
                         continue
                     self._mover_archivos([j], CARPETA_OTROS_DTES, subfolder)
                     db.log_extraction(j.name, "OTHER_DTE", dte_code=tipo_dte)
                     resultados["otros"] += 1
+                done_docs += 1
+                _report_progress()
                 if should_stop and should_stop():
                     break
 

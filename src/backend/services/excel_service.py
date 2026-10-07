@@ -74,23 +74,34 @@ class ExcelService:
                     f"Períodos disponibles para este cliente: {detalle}."
                 )
                 
-            jsons_files = list(target_dir.glob("*.json"))
+            jsons_files = sorted(target_dir.glob("*.json"))
             if not jsons_files:
                 return False, "No hay documentos JSON para generar el reporte."
                 
             rows = []
             correlativo = 1
-            
+            # Segunda barrera anti-duplicados: un mismo codigoGeneracion solo entra una vez.
+            vistos = set()
+            # JSON realmente incluidos en el libro (para la carpeta de entrega).
+            usados = []
+
             for jf in jsons_files:
                 try:
                     try:
                         data = json.loads(jf.read_text(encoding='utf-8-sig'))
                     except UnicodeDecodeError:
                         data = json.loads(jf.read_text(encoding='latin-1'))
-                        
+
                     documento = self._get_document(data)
                     identificacion = extract_identificacion(data)
-                    
+
+                    codigo = str(identificacion.get("codigoGeneracion", "") or "").strip().upper()
+                    if codigo:
+                        if codigo in vistos:
+                            print(f"[{jf.name}] Omitido por duplicado (codigoGeneracion {codigo})")
+                            continue
+                        vistos.add(codigo)
+
                     # 1. Filtro estricto por Tipo DTE
                     tipo_dte = self._extract_tipo_dte(identificacion)
                     if tipo_dte not in ["03", "05", "06", "14"]:
@@ -150,6 +161,7 @@ class ExcelService:
                                     row[col] *= -1
 
                     rows.append(row)
+                    usados.append(jf)
                     correlativo += 1
                     
                 except Exception as e:
