@@ -4,7 +4,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const navItems = document.querySelectorAll(".nav-item");
     const views = document.querySelectorAll(".view-container");
     const btnProcess = document.getElementById("btn-process");
-    const startAccountScope = document.getElementById("start-account-scope");
 
     const appContainer = document.querySelector(".app-container");
     const sidebarToggle = document.getElementById("btn-toggle-sidebar");
@@ -33,7 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // We listen to the pywebviewready event which is fired when window.pywebview is available
     window.addEventListener('pywebviewready', function() {
         showToast("Conectado al motor Python de Oculus.");
-        loadStartAccountOptions();
+        loadScopeData();
         updateTelemetry();
     });
 
@@ -78,37 +77,120 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Process button
-    btnProcess.addEventListener("click", async () => {
-        btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando...';
-        btnProcess.disabled = true;
-        
-        try {
-            if(window.pywebview && window.pywebview.api) {
-                const result = await window.pywebview.api.start_processing(startAccountScope ? startAccountScope.value : "");
-                showToast(result);
-            } else {
-                showToast("Error: API no disponible.");
-                btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
-                btnProcess.disabled = false;
-            }
-        } catch (error) {
-            showToast("Ocurrió un error.");
-            btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
-            btnProcess.disabled = false;
-        }
-    });
+    // --- Alcance del motor: todas las empresas o una empresa ---
+    const scopeState = { mode: "all", company: null, counts: {} };
+    const scopeAllBtn = document.getElementById("scope-all");
+    const scopeOneBtn = document.getElementById("scope-one");
+    const scopePicker = document.getElementById("scope-company-picker");
+    const scopeSearch = document.getElementById("scope-company-search");
+    const scopeList = document.getElementById("scope-company-list");
+    const scopeSummary = document.getElementById("scope-summary");
+    let engineRunning = false;
 
-    async function loadStartAccountOptions() {
-        if(!startAccountScope || !window.pywebview || !window.pywebview.api) return;
-        const accounts = await window.pywebview.api.get_emails();
-        accounts.forEach(account => {
-            const option = document.createElement("option");
-            option.value = account.email;
-            option.textContent = `${account.client || "Sin empresa"} - ${account.email}`;
-            startAccountScope.appendChild(option);
+    function totalScopeAccounts() {
+        return Object.values(scopeState.counts).reduce((sum, n) => sum + n, 0);
+    }
+
+    function updateScopeSummary() {
+        if(!scopeSummary) return;
+        if(scopeState.mode === "one" && scopeState.company) {
+            const n = scopeState.counts[scopeState.company] || 0;
+            scopeSummary.textContent = `Se procesarán ${n} cuenta${n === 1 ? "" : "s"} de ${scopeState.company}.`;
+        } else if(scopeState.mode === "one") {
+            scopeSummary.textContent = "Seleccione una empresa para definir el alcance.";
+        } else {
+            scopeSummary.textContent = `Se procesarán todas las cuentas configuradas (${totalScopeAccounts()}).`;
+        }
+        if(btnProcess) btnProcess.disabled = engineRunning || (scopeState.mode === "one" && !scopeState.company);
+    }
+
+    function renderScopeList(filterText) {
+        if(!scopeList) return;
+        const query = (filterText || "").toLowerCase();
+        const companies = Object.keys(scopeState.counts).sort((a, b) => a.localeCompare(b)).filter(alias => alias.toLowerCase().includes(query));
+        scopeList.innerHTML = "";
+        if(companies.length === 0) {
+            scopeList.innerHTML = '<li class="activity-item empty-state"><p>Sin empresas coincidentes.</p></li>';
+            return;
+        }
+        companies.forEach(alias => {
+            const li = document.createElement("li");
+            li.className = "activity-item scope-option" + (scopeState.company === alias ? " selected" : "");
+            li.tabIndex = 0;
+            li.innerHTML = `<strong style="flex:1;">${alias}</strong><span class="badge badge-teal">${scopeState.counts[alias]} cuenta${scopeState.counts[alias] === 1 ? "" : "s"}</span>`;
+            const pick = () => {
+                scopeState.company = alias;
+                renderScopeList(scopeSearch ? scopeSearch.value : "");
+                updateScopeSummary();
+            };
+            li.addEventListener("click", pick);
+            li.addEventListener("keypress", (e) => { if(e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+            scopeList.appendChild(li);
         });
     }
+
+    function setScopeMode(mode) {
+        scopeState.mode = mode;
+        if(scopeAllBtn) scopeAllBtn.classList.toggle("active", mode === "all");
+        if(scopeOneBtn) scopeOneBtn.classList.toggle("active", mode === "one");
+        if(scopePicker) scopePicker.style.display = mode === "one" ? "" : "none";
+        if(mode === "all") scopeState.company = null;
+        renderScopeList(scopeSearch ? scopeSearch.value : "");
+        updateScopeSummary();
+    }
+
+    if(scopeAllBtn) scopeAllBtn.addEventListener("click", () => setScopeMode("all"));
+    if(scopeOneBtn) scopeOneBtn.addEventListener("click", () => setScopeMode("one"));
+    if(scopeSearch) scopeSearch.addEventListener("input", () => renderScopeList(scopeSearch.value));
+
+    async function loadScopeData() {
+        if(!window.pywebview || !window.pywebview.api) return;
+        try {
+            const [companies, accounts] = await Promise.all([
+                window.pywebview.api.get_companies(false),
+                window.pywebview.api.get_emails()
+            ]);
+            const counts = {};
+            (companies || []).forEach(c => { counts[c.alias] = 0; });
+            (accounts || []).forEach(a => {
+                const alias = a.client || "Sin empresa";
+                counts[alias] = (counts[alias] || 0) + 1;
+            });
+            scopeState.counts = counts;
+            if(scopeState.company && !(scopeState.company in counts)) scopeState.company = null;
+            renderScopeList(scopeSearch ? scopeSearch.value : "");
+            updateScopeSummary();
+        } catch(e) {
+            if(scopeSummary) scopeSummary.textContent = "No se pudo cargar la lista de empresas.";
+        }
+    }
+
+    // Boton unico Iniciar / Detener (usa el mismo metodo que el pie de pagina).
+    if(btnProcess) btnProcess.addEventListener("click", async () => {
+        btnProcess.disabled = true;
+        const stopping = engineRunning;
+        btnProcess.innerHTML = stopping
+            ? '<i class="fa-solid fa-spinner fa-spin"></i> Deteniendo...'
+            : '<i class="fa-solid fa-spinner fa-spin"></i> Iniciando...';
+        try {
+            if(!window.pywebview || !window.pywebview.api) {
+                showToast("Error: API no disponible.");
+                return;
+            }
+            if(stopping) {
+                const result = await window.pywebview.api.stop_processing();
+                showToast(result[1]);
+            } else {
+                const scopeValue = scopeState.mode === "one" ? (scopeState.company || "") : "";
+                const message = await window.pywebview.api.start_processing(scopeValue);
+                showToast(message);
+            }
+        } catch(error) {
+            showToast("Ocurrió un error al cambiar el estado del motor.");
+        } finally {
+            updateTelemetry();
+        }
+    });
 
     // DTE Generator logic
     const selClient = document.getElementById("sel-client");
@@ -231,168 +313,97 @@ document.addEventListener("DOMContentLoaded", () => {
         btnGenerateExcel.disabled = false;
     });
 
-    // --- TELEMETRY & LIVE DASHBOARD ---
+    // --- TELEMETRIA REAL DEL MOTOR ---
     let telemetryInterval = null;
-    let lastProcessedCount = 0;
-    let maxThroughput = 0;
-    
-    // Chart setup
-    const canvas = document.getElementById("live-chart");
-    const ctx = canvas ? canvas.getContext("2d") : null;
-    const chartData = new Array(60).fill(0);
-    
-    function drawChart() {
-        if (!ctx || !canvas) return;
-        const width = canvas.offsetWidth;
-        const height = canvas.offsetHeight;
-        canvas.width = width;
-        canvas.height = height;
-        
-        ctx.clearRect(0, 0, width, height);
-        
-        // Find max
-        let maxVal = Math.max(...chartData, 10);
-        
-        ctx.beginPath();
-        ctx.moveTo(0, height);
-        
-        for(let i=0; i<chartData.length; i++) {
-            let x = (i / (chartData.length - 1)) * width;
-            let y = height - ((chartData[i] / maxVal) * (height - 20)); // padding top
-            ctx.lineTo(x, y);
-        }
-        
-        // Fill area
-        ctx.lineTo(width, height);
-        ctx.closePath();
-        let gradient = ctx.createLinearGradient(0, 0, 0, height);
-        gradient.addColorStop(0, 'rgba(37, 99, 235, 0.3)');
-        gradient.addColorStop(1, 'rgba(37, 99, 235, 0.0)');
-        ctx.fillStyle = gradient;
-        ctx.fill();
-        
-        // Stroke line
-        ctx.beginPath();
-        for(let i=0; i<chartData.length; i++) {
-            let x = (i / (chartData.length - 1)) * width;
-            let y = height - ((chartData[i] / maxVal) * (height - 20));
-            if(i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        requestAnimationFrame(drawChart);
-    }
-    
-    if (canvas) requestAnimationFrame(drawChart);
 
-    function generateMockLog(stage, isError=false) {
-        const tbody = document.getElementById("terminal-body");
-        if(!tbody) return;
-        
-        const now = new Date();
-        const timeStr = now.toISOString().split('T')[1].substring(0, 12);
-        const hexId = Math.floor(Math.random()*65535).toString(16).toUpperCase().padStart(4, '0');
-        
-        let statusBadge = '';
-        if (isError) statusBadge = '<span class="badge-status badge-error">⚠ ERROR</span>';
-        else if (stage === "Download") statusBadge = '<span class="badge-status badge-download">⬇ DOWNLOAD</span>';
-        else if (stage === "Process") statusBadge = '<span class="badge-status badge-parsed">● PARSED</span>';
-        else statusBadge = '<span class="badge-status badge-committed">✓ COMMITTED</span>';
-        
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-            <td>${timeStr}</td>
-            <td>0x${hexId}</td>
-            <td>${stage}</td>
-            <td>${statusBadge}</td>
-        `;
-        
-        // Remove empty state
-        const empty = tbody.querySelector(".empty-row");
-        if(empty) empty.remove();
-        
-        tbody.prepend(tr);
-        if(tbody.children.length > 50) {
-            tbody.lastChild.remove();
-        }
+    function formatHMS(totalSeconds) {
+        const s = Math.max(0, Math.floor(totalSeconds || 0));
+        const h = String(Math.floor(s / 3600)).padStart(2, "0");
+        const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+        const sec = String(s % 60).padStart(2, "0");
+        return `${h}:${m}:${sec}`;
     }
+
+    function phaseText(tel) {
+        const phase = tel.phase || tel.status || "IDLE";
+        if(phase === "DESCARGANDO") return `Descargando correos – cuenta ${tel.accounts_done} de ${tel.total_accounts}${tel.current_account ? ` (${tel.current_account})` : ""}`;
+        if(phase === "PROCESANDO") return `Procesando documentos – ${tel.docs_done} de ${tel.docs_total}`;
+        if(phase === "DURMIENDO") return "En pausa hasta el siguiente ciclo";
+        if(phase === "DETENIENDO") return "Deteniendo el motor...";
+        return "En espera";
+    }
+    
+    function updateDashActivity(messages) {
+        const activity = document.getElementById("dash-activity");
+        if(!activity) return;
+        if(!messages || messages.length === 0) {
+            activity.innerHTML = '<li class="activity-item empty-state"><p>Sin actividad todavía.</p></li>';
+            return;
+        }
+        activity.innerHTML = "";
+        messages.slice(-10).reverse().forEach(entry => {
+            const li = document.createElement("li");
+            li.className = "activity-item";
+            const time = (entry.time || "").slice(11, 19) || entry.time || "";
+            const text = document.createElement("span");
+            text.style.flex = "1";
+            text.textContent = entry.message || "";
+            const clock = document.createElement("span");
+            clock.className = "text-muted";
+            clock.style.fontSize = "0.75rem";
+            clock.textContent = time;
+            li.appendChild(clock);
+            li.appendChild(text);
+            activity.appendChild(li);
+        });
+    }
+
 
     async function updateTelemetry() {
         if(!window.pywebview || !window.pywebview.api) return;
         try {
             const tel = await window.pywebview.api.get_telemetry();
-            
-            // Update Top KPIs
-            const processedEl = document.getElementById("kpi-processed");
-            const statusEl = document.getElementById("kpi-status");
-            const uptimeEl = document.getElementById("kpi-uptime");
-            const errorsEl = document.getElementById("kpi-errors");
-            
-            if(processedEl) processedEl.textContent = tel.docs_processed;
-            if(errorsEl) errorsEl.textContent = tel.errors;
-            if(uptimeEl) uptimeEl.textContent = "Uptime: " + Math.floor(tel.uptime_seconds) + "s";
+            const phase = tel.phase || tel.status || "IDLE";
+            engineRunning = phase !== "IDLE";
 
-            const processActive = tel.status !== "IDLE";
-            btnProcess.disabled = processActive;
-            if(processActive && tel.status !== "STOPPING") {
-                btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Monitoreando...';
-            } else if(!processActive) {
-                btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar Monitoreo';
+            const pct = tel.progress_percent || 0;
+            const fill = document.getElementById("dash-progress-fill");
+            const pctEl = document.getElementById("dash-progress-pct");
+            const phaseEl = document.getElementById("dash-phase-text");
+            if(fill) fill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+            if(pctEl) pctEl.textContent = `${pct}%`;
+            if(phaseEl) phaseEl.textContent = phaseText(tel);
+
+            const setCounter = (id, value) => {
+                const el = document.getElementById(id);
+                if(el) el.textContent = value;
+            };
+            setCounter("c-downloaded", tel.docs_downloaded);
+            setCounter("c-processed", tel.docs_processed);
+            setCounter("c-duplicates", tel.duplicates || 0);
+            setCounter("c-errors", tel.errors);
+
+            const uptimeEl = document.getElementById("dash-uptime");
+            if(uptimeEl) uptimeEl.textContent = "Uptime: " + formatHMS(tel.uptime_seconds);
+
+            updateDashActivity(tel.recent_messages);
+
+            if(btnProcess) {
+                if(engineRunning) {
+                    btnProcess.innerHTML = '<i class="fa-solid fa-stop"></i> Detener';
+                } else {
+                    btnProcess.innerHTML = '<i class="fa-solid fa-play"></i> Iniciar';
+                }
             }
             const stopButton = document.getElementById("btn-stop-process");
             const closeButton = document.getElementById("btn-close-app");
-            if(stopButton) stopButton.disabled = !processActive || tel.status === "STOPPING";
-            if(closeButton) closeButton.disabled = processActive;
-            
-            if(statusEl) {
-                statusEl.textContent = tel.status;
-                statusEl.className = "kpi-value status-badge";
-                if(tel.status === "DOWNLOADING") statusEl.classList.add("status-download");
-                else if(tel.status === "PROCESSING") statusEl.classList.add("status-active");
-            }
-            
-            // Calculate simulated docs/s based on state change
-            let currentRate = 0;
-            if(tel.status === "PROCESSING" || tel.status === "DOWNLOADING") {
-                // If it's active, simulate high-frequency flow
-                currentRate = Math.floor(Math.random() * 15) + 5; 
-                
-                // Add mock logs
-                if(tel.status === "DOWNLOADING") generateMockLog("Download");
-                else {
-                    generateMockLog("Process");
-                    setTimeout(() => generateMockLog("Storage"), 200);
-                }
-            } else if (tel.status === "STARTING") {
-                generateMockLog("System", false);
-            }
-            
-            // Chart Data shift
-            chartData.push(currentRate);
-            chartData.shift();
-            
-            const throughputEl = document.getElementById("kpi-throughput");
-            if(throughputEl) throughputEl.textContent = currentRate.toFixed(1);
-            
-            if(currentRate > maxThroughput) {
-                maxThroughput = currentRate;
-                const maxEl = document.getElementById("kpi-throughput-max");
-                if(maxEl) maxEl.textContent = maxThroughput.toFixed(1);
-            }
-            
-            // Update pipeline nodes
-            document.getElementById("node-download")?.classList.toggle("active", tel.status === "DOWNLOADING");
-            document.getElementById("node-process")?.classList.toggle("active", tel.status === "PROCESSING");
-            document.getElementById("node-db")?.classList.toggle("active", tel.status === "PROCESSING");
-            document.getElementById("conn-1")?.classList.toggle("active", tel.status === "DOWNLOADING" || tel.status === "PROCESSING");
-            document.getElementById("conn-2")?.classList.toggle("active", tel.status === "PROCESSING");
-            
+            if(stopButton) stopButton.disabled = !engineRunning;
+            if(closeButton) closeButton.disabled = engineRunning;
+            [scopeSearch, scopeAllBtn, scopeOneBtn].forEach(el => { if(el) el.disabled = engineRunning; });
+            updateScopeSummary();
         } catch(e) {}
     }
-    
+
     // Start telemetry loop
     telemetryInterval = setInterval(updateTelemetry, 1000);
 

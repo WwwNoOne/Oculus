@@ -25,22 +25,24 @@ class Api:
         return db.get_stats()
 
     def get_telemetry(self):
-        """Retorna telemetría en vivo del orquestador"""
-        return {
-            "status": self.orchestrator.current_status,
-            "docs_downloaded": self.orchestrator.docs_downloaded,
-            "docs_processed": self.orchestrator.docs_processed,
-            "errors": self.orchestrator.errors,
-            "uptime_seconds": 0 if not self.orchestrator.start_time else (
-                __import__('time').time() - self.orchestrator.start_time
-            )
-        }
+        """Retorna telemetría en vivo del orquestador (progreso real)."""
+        return self.orchestrator.get_telemetry()
 
-    def start_processing(self, account_email=None):
-        """Inicia el pipeline de procesamiento real (ahora con el Orquestador)"""
+    def start_processing(self, company_alias=None):
+        """Inicia el pipeline de procesamiento real (ahora con el Orquestador).
+
+        company_alias filtra por empresa (client); si coincide con un email,
+        filtra por esa cuenta. Vacio o None = todas las cuentas.
+        """
         print("Iniciando procesamiento...")
-        self.orchestrator.start(account_email)
-        return "Motor iniciado en segundo plano. Monitoreando la cuenta seleccionada..." if account_email else "Motor iniciado en segundo plano. Monitoreando todas las cuentas..."
+        try:
+            self.orchestrator.start(company_alias)
+        except Exception as exc:
+            return f"No se pudo iniciar el motor: {exc}"
+        scope = (company_alias or "").strip()
+        if scope:
+            return f"Motor iniciado en segundo plano. Alcance: {scope}."
+        return "Motor iniciado en segundo plano. Monitoreando todas las cuentas..."
 
     def stop_processing(self):
         """Solicita una detencion ordenada y espera al final de la operacion actual."""

@@ -67,94 +67,45 @@
             <!-- Vista: Dashboard -->
             <div class="view-container active" id="view-dashboard">
                 <div class="telemetry-dashboard">
-                    <!-- Top Panel: KPIs -->
-                    <div class="kpi-grid">
-                        <div class="kpi-card glass-panel">
-                            <span class="kpi-title">Throughput Instantáneo</span>
-                            <div class="kpi-value"><span id="kpi-throughput">0.0</span> <small>docs/s</small></div>
-                            <div class="kpi-trend">Pico máx: <span id="kpi-throughput-max">0.0</span></div>
-                        </div>
-                        <div class="kpi-card glass-panel">
-                            <span class="kpi-title">Total Procesado</span>
-                            <div class="kpi-value"><span id="kpi-processed">0</span> <small>/ <span id="kpi-queued">0</span></small></div>
-                            <div class="kpi-trend success-text"><i class="fa-solid fa-arrow-trend-up"></i> En progreso</div>
-                        </div>
-                        <div class="kpi-card glass-panel">
-                            <span class="kpi-title">Tasa de Éxito</span>
-                            <div class="kpi-value" id="kpi-success-rate">100%</div>
-                            <div class="kpi-trend warning-text"><span id="kpi-errors">0</span> Errores</div>
-                        </div>
-                        <div class="kpi-card glass-panel">
-                            <span class="kpi-title">Estado del Motor</span>
-                            <div class="kpi-value status-badge" id="kpi-status">IDLE</div>
-                            <div class="kpi-trend" id="kpi-uptime">Uptime: 00:00:00</div>
-                        </div>
-                    </div>
-
-                    <!-- Middle Panel: Pipeline & Chart -->
-                    <div class="middle-panel">
-                        <div class="pipeline-card glass-panel">
-                            <div class="widget-header">
-                                <h3><i class="fa-solid fa-network-wired"></i> Live Pipeline Visualizer</h3>
-                            </div>
-                            <div class="pipeline-visualizer">
-                                <div class="pipeline-node" id="node-download">
-                                    <i class="fa-solid fa-cloud-arrow-down"></i>
-                                    <span>Download</span>
-                                    <div class="node-ring"></div>
-                                </div>
-                                <div class="pipeline-connector" id="conn-1"><div class="particle"></div></div>
-                                <div class="pipeline-node" id="node-process">
-                                    <i class="fa-solid fa-microchip"></i>
-                                    <span>Process</span>
-                                    <div class="node-ring"></div>
-                                </div>
-                                <div class="pipeline-connector" id="conn-2"><div class="particle"></div></div>
-                                <div class="pipeline-node" id="node-db">
-                                    <i class="fa-solid fa-database"></i>
-                                    <span>Storage</span>
-                                    <div class="node-ring"></div>
-                                </div>
-                            </div>
-                            
-                            <div class="controls-bar mt-4" style="display:flex; gap:10px; justify-content:center;">
-                                <select id="start-account-scope" class="premium-input" title="Cuenta a monitorear" style="max-width:260px;">
-                                    <option value="">Todas las cuentas</option>
-                                </select>
-                                <button class="btn btn-primary" id="btn-process"><i class="fa-solid fa-play"></i> Iniciar Monitoreo</button>
-                            </div>
-                        </div>
-                        
-                        <div class="chart-card glass-panel">
-                            <div class="widget-header">
-                                <h3><i class="fa-solid fa-chart-line"></i> Rendimiento en Vivo (docs/s)</h3>
-                            </div>
-                            <div class="chart-container">
-                                <canvas id="live-chart"></canvas>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Bottom Panel: Live Terminal -->
-                    <div class="terminal-card glass-panel">
+                    <!-- Tarjeta principal: alcance, accion, progreso y contadores -->
+                    <div class="dash-card glass-panel">
                         <div class="widget-header">
-                            <h3><i class="fa-solid fa-terminal"></i> Live Activity Feed</h3>
+                            <h3><i class="fa-solid fa-gauge-high"></i> Motor de procesamiento</h3>
                         </div>
-                        <div class="terminal-body" id="terminal-feed">
-                            <table class="terminal-table">
-                                <thead>
-                                    <tr>
-                                        <th>Time</th>
-                                        <th>Doc ID</th>
-                                        <th>Stage</th>
-                                        <th>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="terminal-body">
-                                    <tr class="empty-row"><td colspan="4">Esperando operaciones...</td></tr>
-                                </tbody>
-                            </table>
+                        <div class="scope-segmented" role="group" aria-label="Alcance del procesamiento">
+                            <button class="segment-btn active" id="scope-all" type="button">Todas las empresas</button>
+                            <button class="segment-btn" id="scope-one" type="button">Una empresa</button>
                         </div>
+                        <div id="scope-company-picker" style="display:none;">
+                            <input type="text" id="scope-company-search" class="premium-input" placeholder="Buscar empresa..." aria-label="Buscar empresa">
+                            <ul id="scope-company-list" class="activity-list scope-list"></ul>
+                        </div>
+                        <p id="scope-summary" class="form-hint">Se procesarán todas las cuentas configuradas.</p>
+                        <button class="btn btn-primary btn-big" id="btn-process"><i class="fa-solid fa-play"></i> Iniciar</button>
+                        <div class="progress-wrap" aria-live="polite">
+                            <div class="progress-bar"><div id="dash-progress-fill"></div></div>
+                            <div class="progress-meta">
+                                <span id="dash-progress-pct">0%</span>
+                                <span id="dash-phase-text">En espera</span>
+                            </div>
+                        </div>
+                        <div class="dash-counters">
+                            <div class="counter"><span id="c-downloaded">0</span><small>Descargados</small></div>
+                            <div class="counter"><span id="c-processed">0</span><small>Procesados</small></div>
+                            <div class="counter"><span id="c-duplicates">0</span><small>Duplicados omitidos</small></div>
+                            <div class="counter"><span id="c-errors">0</span><small>Errores</small></div>
+                        </div>
+                    </div>
+
+                    <!-- Panel pequeno: ultima actividad real -->
+                    <div class="dash-card glass-panel">
+                        <div class="widget-header space-between">
+                            <h3><i class="fa-solid fa-terminal"></i> Última actividad</h3>
+                            <span class="kpi-trend" id="dash-uptime">Uptime: 00:00:00</span>
+                        </div>
+                        <ul id="dash-activity" class="activity-list">
+                            <li class="activity-item empty-state"><p>Sin actividad todavía.</p></li>
+                        </ul>
                     </div>
                 </div>
             </div>
