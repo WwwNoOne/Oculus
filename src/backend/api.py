@@ -1,7 +1,15 @@
 from src.backend.database.db_manager import db
 from src.backend.services.dte_service import DTEService
 from src.backend.services.orchestrator import Orchestrator
-from src.backend.utils.config import CARPETA_PROCESADOS, DATA_DIR, DB_PATH, CARPETA_DESCARGAS_RESPALDO
+from src.backend.utils.config import (
+    CARPETA_PROCESADOS,
+    CARPETA_OTROS_DTES,
+    CARPETA_RESPALDO_PDF,
+    CARPETA_DUPLICADOS,
+    DATA_DIR,
+    DB_PATH,
+    CARPETA_DESCARGAS_RESPALDO,
+)
 
 class Api:
     def __init__(self):
@@ -105,8 +113,34 @@ class Api:
         from src.backend.services.excel_service import ExcelService
         excel_service = ExcelService()
         client_path = CARPETA_PROCESADOS / client_name
-        success, msg = excel_service.generar_libro_compras(client_path, month_year, save_path)
-        return success, msg
+        success, msg, export_path = excel_service.generar_libro_compras(client_path, month_year, save_path)
+        # Compatibilidad: callers antiguos esperan (success, msg); los nuevos usan el tercer valor.
+        return success, msg, export_path
+
+    def open_folder(self, path):
+        """Abre una carpeta de entrega en el explorador del sistema.
+
+        Solo actua sobre directorios existentes. Retorna (success, mensaje).
+        """
+        import os
+        import platform
+        import subprocess
+        from pathlib import Path
+
+        folder = Path(path) if path else None
+        if folder is None or not folder.is_dir():
+            return False, "La carpeta de entrega no existe."
+
+        try:
+            if platform.system() == "Windows":
+                os.startfile(str(folder))
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+            return True, f"Abriendo carpeta {folder.name}..."
+        except OSError as exc:
+            return False, f"No se pudo abrir la carpeta: {exc}"
 
     def get_excel_diagnostics(self, client_name="", month_year=""):
         """Devuelve rutas y conteos para diagnosticar reportes sin modificar datos."""

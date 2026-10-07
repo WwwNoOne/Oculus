@@ -182,12 +182,29 @@ document.addEventListener("DOMContentLoaded", () => {
     btnGenerateExcel.addEventListener("click", async () => {
         btnGenerateExcel.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generando...';
         btnGenerateExcel.disabled = true;
+        const btnOpenExport = document.getElementById("btn-open-export");
+        if(btnOpenExport) btnOpenExport.style.display = "none";
         try {
-            const success = await window.pywebview.api.generate_excel(
+            const result = await window.pywebview.api.generate_excel(
                 selClient.value, selMonth.value, inputPath.value
             );
-            showToast(success[1]);
-            if(!success[0] && window.pywebview.api.get_excel_diagnostics) {
+            // generate_excel devuelve (success, mensaje, ruta_carpeta).
+            const success = result[0];
+            const message = result[1];
+            const exportPath = result.length > 2 ? result[2] : null;
+            showToast(message);
+            if(success && exportPath && btnOpenExport) {
+                btnOpenExport.style.display = "";
+                btnOpenExport.onclick = async () => {
+                    try {
+                        const opened = await window.pywebview.api.open_folder(exportPath);
+                        showToast(opened[1]);
+                    } catch(e) {
+                        showToast("No se pudo abrir la carpeta.");
+                    }
+                };
+            }
+            if(!success && window.pywebview.api.get_excel_diagnostics) {
                 const diagnostics = await window.pywebview.api.get_excel_diagnostics(
                     selClient.value, selMonth.value
                 );

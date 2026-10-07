@@ -1,7 +1,9 @@
 import json
 import re
+import shutil
 import pandas as pd
 from pathlib import Path
+from src.backend.utils.config import CARPETA_RESPALDO_PDF
 from src.backend.utils.json_utils import extract_identificacion, get_document_sections, extract_sello, get_sello_from_mh_response
 
 class ExcelService:
@@ -59,8 +61,34 @@ class ExcelService:
                 retenido += val
         return percibido, retenido
 
+    @staticmethod
+    def _stem_key(filename: str) -> str:
+        """Clave de emparejamiento JSON<->PDF: minusculas, sin _standard ni sufijos _N."""
+        stem = Path(filename).stem.lower()
+        stem = re.sub(r"_standard$", "", stem)
+        stem = re.sub(r"(?:_\d+)+$", "", stem)
+        return stem
+
+    def _codigo_de_archivo(self, json_path: Path) -> str:
+        """Lee el codigoGeneracion de un JSON ya guardado. Retorna "" si no se puede leer."""
+        try:
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8-sig"))
+            except UnicodeDecodeError:
+                data = json.loads(json_path.read_text(encoding="latin-1"))
+            return str(extract_identificacion(data).get("codigoGeneracion", "") or "").strip()
+        except Exception:
+            return ""
+
     def generar_libro_compras(self, carpeta_cliente: Path, mes_anio: str, save_path: str):
-        """Lee los JSONs de un mes específico y genera el libro de compras oficial con reglas estrictas."""
+        """Lee los JSONs de un mes específico y genera el libro de compras oficial con reglas estrictas.
+
+        Crea una carpeta de entrega `<save_path>/<alias>_<mes>/` con el .xlsx en la raiz
+        y subcarpetas `JSON/` (copias de los JSON incluidos) y `PDF/` (copias de sus PDF
+        de respaldo). Nunca mueve originales: solo copia.
+
+        Retorna (success, mensaje, ruta_carpeta_entrega | None).
+        """
         try:
             target_dir = carpeta_cliente / mes_anio
             if not target_dir.exists():
@@ -72,11 +100,11 @@ class ExcelService:
                 return False, (
                     f"La carpeta de datos no existe: {target_dir}. "
                     f"Períodos disponibles para este cliente: {detalle}."
-                )
+                ), None
                 
             jsons_files = sorted(target_dir.glob("*.json"))
             if not jsons_files:
-                return False, "No hay documentos JSON para generar el reporte."
+                return False, "No hay documentos JSON para generar el reporte.", None
                 
             rows = []
             correlativo = 1
@@ -168,20 +196,69 @@ class ExcelService:
                     print(f"Error parseando {jf.name}: {e}")
                     
             if not rows:
-                return False, "No se encontraron DTEs válidos (03, 05, 06, 14) en este periodo."
-                
-            # La interfaz solicita una carpeta. Crear el archivo final aqui evita
-            # que pandas intente inferir el formato de una ruta sin extension.
-            output_dir = Path(save_path)
-            output_dir.mkdir(parents=True, exist_ok=True)
+                return False, "No se encontraron DTEs válidos (03, 05, 06, 14) en este periodo.", None
+
+            # Carpeta de entrega: <destino>/<alias>_<mes>/ con el .xlsx, JSON/ y PDF/.
+            # Si ya existe, se crea un sufijo automatico (_2, _3...) en vez de sobrescribir.
+            output_base = Path(save_path)
+            output_base.mkdir(parents=True, exist_ok=True)
             alias = carpeta_cliente.name.strip() or "empresa"
             alias = re.sub(r'[<>:"/\\|?*]', "_", alias).strip(" .") or "empresa"
-            output_file = output_dir / f"{alias}_Libro de compras_{mes_anio}.xlsx"
+            delivery_dir = output_base / f"{alias}_{mes_anio}"
+            sufijo = 2
+            while delivery_dir.exists():
+                delivery_dir = output_base / f"{alias}_{mes_anio}_{sufijo}"
+                sufijo += 1
+            json_dir = delivery_dir / "JSON"
+            pdf_dir = delivery_dir / "PDF"
+            json_dir.mkdir(parents=True, exist_ok=True)
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            output_file = delivery_dir / f"{alias}_Libro de compras_{mes_anio}.xlsx"
 
             df = pd.DataFrame(rows)
             df.to_excel(output_file, index=False, engine="openpyxl")
-            
-            return True, f"Libro de compras generado exitosamente: {output_file.name}"
-            
+
+            # Copiar (nunca mover) solo los JSON realmente incluidos en el libro.
+            for jf in usados:
+                try:
+                    shutil.copy2(str(jf), str(json_dir / jf.name))
+                except Exception as e:
+                    print(f"No se pudo copiar {jf.name} a la entrega: {e}")
+
+            # Emparejar cada JSON con su PDF de respaldo (05_Respaldo_PDF/<cliente>/<mes>/).
+            pdf_origen = CARPETA_RESPALDO_PDF / carpeta_cliente.name / mes_anio
+            pdfs_respaldo = list(pdf_origen.glob("*.pdf")) if pdf_origen.exists() else []
+            pdf_por_stem = {}
+            for pdf in pdfs_respaldo:
+                pdf_por_stem.setdefault(self._stem_key(pdf.name), pdf)
+            sin_pdf = 0
+            for jf in usados:
+                match = pdf_por_stem.get(self._stem_key(jf.name))
+                if match is None:
+                    codigo = self._codigo_de_archivo(jf)
+                    if codigo:
+                        codigo_lower = codigo.lower()
+                        match = next(
+                            (pdf for pdf in pdfs_respaldo if codigo_lower in pdf.name.lower()),
+                            None,
+                        )
+                if match is not None:
+                    try:
+                        shutil.copy2(str(match), str(pdf_dir / match.name))
+                    except Exception as e:
+                        print(f"No se pudo copiar {match.name} a la entrega: {e}")
+                        sin_pdf += 1
+                else:
+                    sin_pdf += 1
+
+            con_pdf = len(usados) - sin_pdf
+            mensaje = (
+                f"Libro de compras generado: {output_file.name}. "
+                f"Documentos exportados: {len(usados)} "
+                f"({con_pdf} con PDF, {sin_pdf} sin PDF). "
+                f"Carpeta de entrega: {delivery_dir}"
+            )
+            return True, mensaje, str(delivery_dir)
+
         except Exception as e:
-            return False, f"Error general: {str(e)}"
+            return False, f"Error general: {str(e)}", None
