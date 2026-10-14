@@ -26,6 +26,13 @@ SRC_DIR = BASE_DIR / "src"
 FRONTEND_DIR = SRC_DIR / "frontend"
 BACKEND_DIR = SRC_DIR / "backend"
 
+if getattr(sys, 'frozen', False):
+    # En el .exe, PyInstaller extrae todo a sys._MEIPASS (con
+    # --contents-directory=internal, a <exe>/internal) y __file__ ya no
+    # apunta al proyecto: el frontend viaja con --add-data a src/frontend.
+    _MEI = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    FRONTEND_DIR = _MEI / "src" / "frontend"
+
 # Carpetas de datos (Aisladas del código fuente)
 DATA_DIR = get_data_dir()
 CARPETA_DESCARGAS = DATA_DIR / "01_Descargas"
