@@ -15,8 +15,8 @@ def get_data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if getattr(sys, 'frozen', False):
-        # Producción: C:\Users\Usuario\Documents\Oculus_Workspace
-        return Path.home() / "Documents" / "Oculus_Workspace"
+        # Producción: carpeta versionada para no chocar con el programa anterior.
+        return Path.home() / "Documents" / "OculusV2_Workspace"
     else:
         # Desarrollo: Carpeta del proyecto
         return Path(__file__).resolve().parent.parent.parent.parent / "data"

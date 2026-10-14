@@ -101,7 +101,7 @@ class EmailService:
             resultados["descargados"] += 1
             print(f"  [+] Descargado: {nombre_final}")
 
-    def descargar_correos(self, cuenta: str, servidor: str, puerto: int, usuario: str, password: str, carpeta: str = "INBOX", protocolo: str = "IMAP", estado_key: str = None, start_date: str = "2026-05-01", end_date: str = None, should_stop=None, auth_type: str = "password", oauth_token: str = None):
+    def descargar_correos(self, cuenta: str, servidor: str, puerto: int, usuario: str, password: str, carpeta: str = "INBOX", protocolo: str = "IMAP", estado_key: str = None, start_date: str = "2026-09-01", end_date: str = None, should_stop=None, auth_type: str = "password", oauth_token: str = None):
         """Punto de entrada principal para IMAP, POP3 u OAuth (XOAUTH2 por IMAP)."""
         print(f"[*] Iniciando descarga ({protocolo}/{auth_type}) para {usuario} en {servidor}")
         estado_key = estado_key or usuario
@@ -118,8 +118,8 @@ class EmailService:
         try:
             fecha_corte = datetime.date.fromisoformat(start_date)
         except (TypeError, ValueError):
-            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-05-01")
-            fecha_corte = datetime.date(2026, 5, 1)
+            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-09-01")
+            fecha_corte = datetime.date(2026, 9, 1)
         
         mailbox = None
         intentos = 0
@@ -169,9 +169,10 @@ class EmailService:
                 criterio_args["date_lt"] = datetime.date.fromisoformat(end_date)
             criterio = AND(**criterio_args)
 
+            vistos = set(estado_descargas[estado_key])
             try:
                 for msg in mailbox.fetch(criterio, mark_seen=False):
-                    if str(msg.uid) in estado_descargas[estado_key]:
+                    if str(msg.uid) in vistos:
                         continue
 
                     resultados["revisados"] += 1
@@ -184,6 +185,7 @@ class EmailService:
 
                         if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
                             estado_descargas[estado_key].append(str(msg.uid))
+                            vistos.add(str(msg.uid))
                         if should_stop and should_stop():
                             break
                     except Exception as ex:
@@ -222,8 +224,8 @@ class EmailService:
         try:
             start_date_value = _datetime.date.fromisoformat(start_date)
         except (TypeError, ValueError):
-            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-05-01")
-            start_date_value = _datetime.date(2026, 5, 1)
+            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-09-01")
+            start_date_value = _datetime.date(2026, 9, 1)
         fecha_corte = _datetime.datetime.combine(
             start_date_value, _datetime.time.min, tzinfo=_datetime.timezone.utc)
         fecha_fin = _datetime.datetime.combine(
@@ -248,7 +250,22 @@ class EmailService:
             try:
                 conn = oauth_service.conectar(usuario, auth_type, servidor, puerto,
                                               token=oauth_token)
-                conn.select("INBOX", readonly=True)
+                # Gmail archiva fuera de INBOX: revisar All Mail como en IMAP normal.
+                seleccionada = "INBOX"
+                if "gmail" in (servidor or "").lower():
+                    try:
+                        _estado, carpetas = conn.list()
+                        for carpeta in (carpetas or []):
+                            texto = carpeta.decode(errors="ignore")
+                            nombre = texto.split('"')[-2] if '"' in texto else texto.split()[-1]
+                            if nombre.lower() in {"[gmail]/all mail", "all mail", "todos los mensajes"}:
+                                seleccionada = nombre
+                                break
+                    except Exception as folder_error:
+                        print(f"  [!] Gmail OAuth: sin acceso a Todos ({folder_error})")
+                conn.select(seleccionada, readonly=True)
+                if seleccionada != "INBOX":
+                    print(f"  [*] Gmail OAuth: revisando carpeta {seleccionada}")
                 break
             except Exception as e:
                 intentos += 1
@@ -267,16 +284,21 @@ class EmailService:
 
         try:
             try:
-                _estado, datos = conn.uid("search", None, "ALL")
+                # Pre-filtro en servidor: solo lo llegado desde el corte.
+                desde = start_date_value.strftime("%d-%b-%Y")
+                _estado, datos = conn.uid("search", None, f"(SINCE {desde})")
                 uids = (datos[0] or b"").split()
-                print(f"  [IMAP-OAuth] {len(uids)} mensajes en el servidor.")
+                print(f"  [IMAP-OAuth] {len(uids)} mensajes desde {desde}.")
+                vistos = set(estado_descargas[estado_key])
                 for num in uids:
                     uid = num.decode()
-                    if uid in estado_descargas[estado_key]:
+                    if uid in vistos:
                         continue
                     resultados["revisados"] += 1
                     try:
                         _estado, fetched = conn.uid("fetch", num, "(RFC822)")
+                        if not fetched or not fetched[0]:
+                            continue
                         crudo = fetched[0][1]
                         msg = _email.message_from_bytes(crudo)
 
@@ -287,9 +309,11 @@ class EmailService:
                                 dt = dt.replace(tzinfo=_datetime.timezone.utc)
                             if dt < fecha_corte:
                                 estado_descargas[estado_key].append(uid)
+                                vistos.add(uid)
                                 continue
                             if fecha_fin and dt >= fecha_fin:
                                 estado_descargas[estado_key].append(uid)
+                                vistos.add(uid)
                                 continue
                         else:
                             dt = _datetime.datetime.now()
@@ -314,6 +338,7 @@ class EmailService:
                                                         dt, adjuntos_raw, resultados)
                         if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
                             estado_descargas[estado_key].append(uid)
+                            vistos.add(uid)
                         if should_stop and should_stop():
                             break
                     except Exception as ex:
@@ -345,8 +370,8 @@ class EmailService:
         try:
             start_date_value = datetime.date.fromisoformat(start_date)
         except (TypeError, ValueError):
-            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-05-01")
-            start_date_value = datetime.date(2026, 5, 1)
+            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-09-01")
+            start_date_value = datetime.date(2026, 9, 1)
         fecha_corte = datetime.datetime.combine(
             start_date_value,
             datetime.time.min,
@@ -395,11 +420,12 @@ class EmailService:
             num_msgs = len(conn.list()[1])
             print(f"  [POP3] {num_msgs} mensajes en el servidor.")
 
+            vistos = set(estado_descargas[estado_key])
             try:
                 for i in range(1, num_msgs + 1):
                     uid = uidls.get(i, str(i))
 
-                    if uid in estado_descargas[estado_key]:
+                    if uid in vistos:
                         continue
 
                     resultados["revisados"] += 1
@@ -417,9 +443,11 @@ class EmailService:
                                 dt = dt.replace(tzinfo=datetime.timezone.utc)
                             if dt < fecha_corte:
                                 estado_descargas[estado_key].append(uid)
+                                vistos.add(uid)
                                 continue
                             if fecha_fin and dt >= fecha_fin:
                                 estado_descargas[estado_key].append(uid)
+                                vistos.add(uid)
                                 continue
                         else:
                             dt = datetime.datetime.now()
@@ -439,6 +467,7 @@ class EmailService:
                         self._procesar_mensaje_generico(cuenta, uid, subject, dt, adjuntos_raw, resultados)
                         if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
                             estado_descargas[estado_key].append(uid)
+                            vistos.add(uid)
                         if should_stop and should_stop():
                             break
 

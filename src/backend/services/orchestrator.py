@@ -226,7 +226,7 @@ class Orchestrator:
                             password=password,
                             protocolo=protocolo,
                             estado_key=email,
-                            start_date=cuenta.get("start_date") or "2026-05-01",
+                            start_date=cuenta.get("start_date") or "2026-09-01",
                             should_stop=self._should_stop,
                             auth_type=auth_type,
                             oauth_token=oauth_token,

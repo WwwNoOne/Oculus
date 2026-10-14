@@ -655,7 +655,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             document.getElementById("email-client-name").value = account.client || '';
                             document.getElementById("email-address").value = account.email;
                             document.getElementById("email-port").value = account.port;
-                            document.getElementById("email-start-date").value = account.start_date || "2026-05-01";
+                            document.getElementById("email-start-date").value = account.start_date || "2026-09-01";
                             
                             // Try to match provider
                             const providerEl = document.getElementById("email-provider");
@@ -734,7 +734,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const pass = document.getElementById("email-password").value;
         const portVal = document.getElementById("email-port") ? document.getElementById("email-port").value : "993";
         const port = parseInt(portVal, 10) || 993;
-        const startDate = document.getElementById("email-start-date").value || "2026-05-01";
+        const startDate = document.getElementById("email-start-date").value || "2026-09-01";
 
         if(!client || !email || !server) {
             showToast("Seleccione una empresa y complete los campos obligatorios.");
@@ -790,7 +790,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if(forceBox) forceBox.checked = false;
         updateEmailModeUI("gmail_oauth");
         document.getElementById("email-port").value = "993";
-        document.getElementById("email-start-date").value = "2026-05-01";
+        document.getElementById("email-start-date").value = "2026-09-01";
     });
 
     // --- OAUTH: login oficial en el navegador ---

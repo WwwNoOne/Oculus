@@ -29,7 +29,7 @@ def build_exe():
     
     cmd = [
         ".venv\\Scripts\\pyinstaller",
-        "--name=Oculus",
+        "--name=OculusV2",
         "--windowed",
         "--contents-directory=internal",
         "--icon=icono.ico", # Usar el icono que convertimos

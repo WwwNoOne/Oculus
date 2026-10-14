@@ -240,7 +240,7 @@ class Api:
     def add_company(self, alias):
         return db.add_company(alias)
 
-    def add_email(self, client, email, password_enc, server, port=993, start_date='2026-05-01', auth_type='password'):
+    def add_email(self, client, email, password_enc, server, port=993, start_date='2026-09-01', auth_type='password'):
         valid, message = self._validar_cuenta(email, server, port)
         if not valid:
             return False, message
@@ -252,7 +252,7 @@ class Api:
         success, msg = db.add_email(client, email, password_enc, server, port, start_date, auth_type)
         return success, msg
 
-    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01', auth_type=None):
+    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-09-01', auth_type=None):
         valid, message = self._validar_cuenta(new_email, new_server, new_port)
         if not valid:
             return False, message

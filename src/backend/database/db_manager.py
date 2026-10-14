@@ -24,7 +24,7 @@ class DBManager:
                     password_encrypted TEXT NOT NULL,
                     server TEXT NOT NULL,
                     port INTEGER NOT NULL,
-                    start_date TEXT DEFAULT '2026-05-01',
+                    start_date TEXT DEFAULT '2026-09-01',
                     active BOOLEAN DEFAULT 1,
                     last_sync DATETIME
                 )
@@ -78,7 +78,7 @@ class DBManager:
             except sqlite3.OperationalError:
                 pass # La columna ya existe
             try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN start_date TEXT DEFAULT '2026-05-01'")
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN start_date TEXT DEFAULT '2026-09-01'")
             except sqlite3.OperationalError:
                 pass # La columna ya existe
             # Los alias de recuperacion se marcan como 'recovery' para no
@@ -262,7 +262,7 @@ class DBManager:
             except sqlite3.IntegrityError:
                 return False, "Ese alias ya está registrado"
 
-    def add_email(self, client, email, password_enc, server, port, start_date='2026-05-01', auth_type='password'):
+    def add_email(self, client, email, password_enc, server, port, start_date='2026-09-01', auth_type='password'):
         auth_type = (auth_type or 'password').strip().lower()
         if auth_type not in ('password', 'google', 'microsoft'):
             auth_type = 'password'
@@ -282,7 +282,7 @@ class DBManager:
             except Exception as e:
                 return False, str(e)
 
-    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01', auth_type=None):
+    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-09-01', auth_type=None):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             try:
