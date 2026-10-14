@@ -3,7 +3,7 @@ import json
 import shutil
 import re
 from pathlib import Path
-from src.backend.utils.config import CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_RESPALDO_PDF, CARPETA_DUPLICADOS
+from src.backend.utils.config import CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_RESPALDO_PDF, CARPETA_DUPLICADOS, CARPETA_ERRORES
 from src.backend.database.db_manager import db
 from src.backend.services.ocr_service import OCRService
 from src.backend.utils.json_utils import extract_identificacion
@@ -69,6 +69,28 @@ class DTEService:
             path = Path(sp)
             if path.exists() and path.is_file():
                 self._mover_sin_sobrescribir(path, target_dir)
+
+    def _mover_a_errores(self, source_paths: list, subfolder: str):
+        """Mueve archivos que no se pudieron procesar a 09_Errores/<subfolder>.
+
+        Garantiza flujo lineal: todo lo que entra a descargas sale exactamente
+        una vez (destino, duplicados o errores), sin reintentos eternos.
+        """
+        target_dir = CARPETA_ERRORES / subfolder
+        for sp in source_paths:
+            path = Path(sp)
+            if path.exists() and path.is_file():
+                self._mover_sin_sobrescribir(path, target_dir)
+
+    def _subfolder(self, filename: str, mes_anio: str, destination_alias=None) -> str:
+        """Deduce <alias>/<mes> desde el nombre con formato ALIAS_UID_FECHA_..."""
+        if destination_alias:
+            cliente = destination_alias
+        else:
+            partes = filename.split('_')
+            cliente = partes[0] if len(partes) > 1 else "Cliente_Desconocido"
+        cliente_folder = "".join(x for x in cliente if x.isalnum() or x in " -_").strip()
+        return f"{cliente_folder}/{mes_anio}"
 
     def _get_month_from_filename(self, filename: str) -> str:
         """Usa la fecha del nombre ALIAS_UID_DDMMYYYY como respaldo."""
@@ -310,19 +332,46 @@ class DTEService:
                 print(f"[*] Fallback a OCR para PDF huérfano: {pdf.name}")
                 try:
                     raw_json = self.ocr.process_pdf_to_raw_json(str(pdf))
+                    if raw_json is None:
+                        raise ValueError("OCR sin datos (sin IA configurada, ilegible o fallo de IA)")
                     json_asociado_data = self.ocr.parse_raw_to_standard(raw_json)
-                    
+                    if json_asociado_data is None:
+                        raise ValueError("OCR sin datos (sin IA configurada, ilegible o fallo de IA)")
+
                     json_asociado_path = download_dir / f"{pdf.stem}_standard.json"
                     with open(json_asociado_path, 'w', encoding='utf-8') as f:
                         json.dump(json_asociado_data, f, indent=4)
-                        
+
                     resultados["procesados_ocr"] += 1
                 except Exception as e:
+                    # Lineal a errores: el PDF sale de descargas, no se reintenta.
                     db.log_extraction(pdf.name, "ERROR", error_msg=str(e))
                     resultados["errores"] += 1
+                    self._mover_a_errores(
+                        [pdf],
+                        self._subfolder(pdf.name, self._get_month_from_filename(pdf.name), destination_alias),
+                    )
                     done_docs += 1
                     _report_progress()
                     continue
+
+            if pdf_emparejado and json_asociado_data is None:
+                # Emparejado pero ilegible: lineal a errores junto con su JSON.
+                db.log_extraction(pdf.name, "ERROR", error_msg="JSON emparejado ilegible o vacio")
+                resultados["errores"] += 1
+                candidatos = [pdf]
+                if json_asociado_path is not None and Path(json_asociado_path).exists():
+                    candidatos.append(json_asociado_path)
+                    jsons_usados.add(json_asociado_path)
+                self._mover_a_errores(
+                    candidatos,
+                    self._subfolder(pdf.name, self._get_month_from_filename(pdf.name), destination_alias),
+                )
+                done_docs += 1
+                _report_progress()
+                if should_stop and should_stop():
+                    break
+                continue
             # Filtrado por tipoDte (03, 05, 06, 14)
             if json_asociado_data:
                 identificacion = self._get_identificacion(json_asociado_data)
@@ -395,8 +444,13 @@ class DTEService:
             json_asociado_data = self._leer_json_estandarizado(j)
 
             if not json_asociado_data:
+                # Lineal a errores: el JSON sale de descargas, no se reintenta.
                 db.log_extraction(j.name, "ERROR", error_msg="JSON ilegible o vacio")
                 resultados["errores"] += 1
+                self._mover_a_errores(
+                    [j],
+                    self._subfolder(j.name, self._get_month_from_filename(j.name), destination_alias),
+                )
                 done_docs += 1
                 _report_progress()
                 continue

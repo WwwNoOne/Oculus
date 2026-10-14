@@ -52,7 +52,17 @@ def main() -> int:
         archivos = archivos[:args.solo]
 
     if SALIDA.exists():
-        shutil.rmtree(SALIDA)
+        # Reintentos: OneDrive/antivirus pueden bloquear archivos momentaneamente.
+        import time
+
+        for intento in range(4):
+            try:
+                shutil.rmtree(SALIDA)
+                break
+            except OSError:
+                if intento == 3:
+                    raise
+                time.sleep(3)
     staging = SALIDA / "entrada_prueba"
     staging.mkdir(parents=True, exist_ok=True)
     for origen in archivos:

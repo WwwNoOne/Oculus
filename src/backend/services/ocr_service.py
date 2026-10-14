@@ -2,7 +2,6 @@ import os
 import json
 import fitz  # PyMuPDF
 import requests
-from pathlib import Path
 from src.backend.utils.config import DATA_DIR
 from src.backend.utils.json_utils import extract_identificacion, find_section
 
@@ -136,9 +135,12 @@ class OCRService:
             print(f"[!] LlamaParse fallo para {pdf_path}: {e}")
             return ""
 
-    def process_pdf_to_raw_json(self, pdf_path: str) -> dict:
+    def process_pdf_to_raw_json(self, pdf_path: str) -> dict | None:
         """
         Tubería principal: PyMuPDF -> DeepSeek -> JSON Crudo
+
+        Lineal y sin retroceso: si no hay datos (sin IA, ilegible o fallo),
+        retorna None en vez de un JSON con marcas de fallo o simulado.
         """
         print(f"[*] Iniciando Extracción Híbrida (PyMuPDF + DeepSeek) para: {pdf_path}")
         
@@ -152,12 +154,12 @@ class OCRService:
 
         if not texto_crudo or len(texto_crudo) < 50:
             print("[!] PDF escaneado sin texto util. Configure LlamaParse para vision.")
-            return {"error": "documento_escaneado", "requires_vision": True}
-        
+            return None
+
         # 2. Estructuración con DeepSeek (Gemini queda como respaldo)
         if not self.deepseek_api_key and not self.gemini_api_key:
-            print("[!] No hay API Key de DeepSeek ni Gemini. Simulando respuesta.")
-            return self._mock_response(pdf_path)
+            print("[!] No hay API Key de DeepSeek ni Gemini. Sin datos.")
+            return None
             
         prompt = f"""
         Eres un asistente experto en contabilidad. Extrae la siguiente información del texto de este Documento Tributario Electrónico (DTE).
@@ -169,6 +171,8 @@ class OCRService:
         3. Si el sello no existe, devuelve selloRecepcion con cadena vacía y NO lo inventes.
         4. tipoDte es el código que está en la identificación del DTE. Si el documento no es un DTE, devuelve tipoDte UNKNOWN.
         5. Los valores numéricos deben copiarse como están, sin redondear.
+        6. Si el texto no es legible o no corresponde a un DTE, responde exactamente {{}}.
+        7. Nunca agregues campos, marcas de fallo ni texto fuera del JSON.
         
         Estructura requerida:
         {{
@@ -201,13 +205,15 @@ class OCRService:
         
         try:
             return self._generate_json(prompt)
-            
+
         except Exception as e:
             print(f"[!] Error procesando con DeepSeek/Gemini: {e}")
-            return {"error": "fallo_ia", "mensaje": str(e)}
+            return None
 
-    def parse_raw_to_standard(self, raw_json: dict) -> dict:
+    def parse_raw_to_standard(self, raw_json: dict) -> dict | None:
         """Transforma el JSON crudo en el formato estándar del sistema"""
+        if not isinstance(raw_json, dict):
+            return None
         estandar_json = raw_json.copy()
         estandar_json["_metadata"] = {
             "fuente": "IA",
@@ -216,10 +222,13 @@ class OCRService:
         }
         return estandar_json
 
-    def process_raw_json_text(self, json_text: str) -> dict:
+    def process_raw_json_text(self, json_text: str) -> dict | None:
         """
         Toma el texto de un JSON que puede venir deforme o con otros nombres de variables,
         y lo pasa por DeepSeek para que nos devuelva la estructura inmaculada y oficial.
+
+        Lineal y sin retroceso: si no hay datos (sin IA, ilegible o fallo),
+        retorna None en vez de un JSON con marcas de fallo o simulado.
         """
         print("[*] Estandarizando JSON crudo a través de DeepSeek...")
 
@@ -240,11 +249,11 @@ class OCRService:
             pass
         
         if not self.deepseek_api_key and not self.gemini_api_key:
-            print("[!] No hay API Key de DeepSeek ni Gemini. Devolviendo JSON original como fallback.")
+            print("[!] No hay API Key de DeepSeek ni Gemini. Sin datos.")
             try:
                 return json.loads(json_text)
-            except:
-                return self._mock_response("json_fallback")
+            except (TypeError, ValueError):
+                return None
                 
         prompt = f"""
         Eres un purificador de datos. El siguiente texto es un JSON (posiblemente con claves mal nombradas, anidadas o extrañas) que representa un Documento Tributario Electrónico (DTE) de El Salvador.
@@ -257,7 +266,8 @@ class OCRService:
         2. El sello puede venir como selloRecepcion, selloRecibido o dentro de respuestaMH. Copia el sello real. Si no existe, deja cadena vacía; NO inventes uno.
         3. El tipoDte es el que está dentro de la identificación. Si el documento NO es un DTE, devuelve "UNKNOWN".
         4. Conserva los números originales sin inventar ni redondear.
-        5. Si la información está dañada o no se puede extraer de manera confiable, deja los campos vacíos en lugar de suponer valores.
+        5. Si la información está dañada o no se puede extraer de manera confiable, responde exactamente {{}}.
+        6. Nunca agregues campos, marcas de fallo ni texto fuera del JSON.
         
         Estructura requerida estricta:
         {{
@@ -295,22 +305,7 @@ class OCRService:
         
         try:
             return self.parse_raw_to_standard(self._generate_json(prompt))
-            
+
         except Exception as e:
             print(f"[!] Error estandarizando JSON con DeepSeek/Gemini: {e}")
-            try:
-                # Fallback extremo: Si la IA falla o se satura, usar el json sucio
-                return json.loads(json_text)
-            except:
-                return {"error": "fallo_ia_json", "mensaje": str(e)}
-        
-    def _mock_response(self, pdf_path: str) -> dict:
-        return {
-            "identificacion": {
-                "tipoDte": "UNKNOWN",
-                "codigoGeneracion": f"GEN-FROM-OCR-{Path(pdf_path).stem}"
-            },
-            "emisor": {"nombre": "Emisor Detectado IA", "nit": "0000-000000-000-0"},
-            "receptor": {"nombre": "Cliente Empresa SA", "nit": "1111-111111-111-1"},
-            "resumen": {"totalPagar": 150.00}
-        }
+            return None

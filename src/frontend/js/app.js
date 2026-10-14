@@ -232,8 +232,9 @@ document.addEventListener("DOMContentLoaded", () => {
         excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | JSON del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
         const summary = document.getElementById("excel-summary");
         if(summary) {
+            const base = `${diagnostics.json_count} documentos JSON, ${diagnostics.pdf_count} con PDF`;
             summary.textContent = (selClient.value && selMonth.value)
-                ? `${diagnostics.json_count} documentos JSON, ${diagnostics.pdf_count} con PDF.`
+                ? base + ((diagnostics.error_count || 0) > 0 ? `, ${diagnostics.error_count} con errores.` : ".")
                 : "";
         }
     }

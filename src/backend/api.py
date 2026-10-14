@@ -6,6 +6,7 @@ from src.backend.utils.config import (
     CARPETA_OTROS_DTES,
     CARPETA_RESPALDO_PDF,
     CARPETA_DUPLICADOS,
+    CARPETA_ERRORES,
     DATA_DIR,
     DB_PATH,
     CARPETA_DESCARGAS_RESPALDO,
@@ -144,6 +145,7 @@ class Api:
             CARPETA_RESPALDO_PDF / alias,
             CARPETA_DESCARGAS_RESPALDO / alias,
             CARPETA_DUPLICADOS / alias,
+            CARPETA_ERRORES / alias,
         ]
         total_files = 0
         total_bytes = 0
@@ -200,6 +202,7 @@ class Api:
             CARPETA_RESPALDO_PDF / alias,
             CARPETA_DESCARGAS_RESPALDO / alias,
             CARPETA_DUPLICADOS / alias,
+            CARPETA_ERRORES / alias,
         ]
         resolved_targets = []
         for target in targets:
@@ -265,6 +268,7 @@ class Api:
         periods = []
         json_count = 0
         pdf_count = 0
+        error_count = 0
         selected_path = None
 
         if client_path and client_path.exists():
@@ -277,6 +281,10 @@ class Api:
                     pdf_backup = CARPETA_RESPALDO_PDF / client_name / month_year
                     if pdf_backup.exists():
                         pdf_count = len(list(pdf_backup.glob("*.pdf")))
+                    # Los fallos lineales viven en 09_Errores/<cliente>/<mes>/.
+                    error_backup = CARPETA_ERRORES / client_name / month_year
+                    if error_backup.exists():
+                        error_count = sum(1 for p in error_backup.rglob("*") if p.is_file())
 
         return {
             "data_dir": str(DATA_DIR),
@@ -288,6 +296,7 @@ class Api:
             "periods": periods,
             "json_count": json_count,
             "pdf_count": pdf_count,
+            "error_count": error_count,
         }
 
     def open_document(self, file_path):

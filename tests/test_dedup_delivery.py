@@ -37,11 +37,13 @@ def carpetas(tmp_path, monkeypatch):
     pdfs = tmp_path / "05_Respaldo_PDF"
     respaldo = tmp_path / "07_Descargas_Respaldo"
     duplis = tmp_path / "08_Duplicados"
-    for carpeta in (proc, otros, pdfs, respaldo, duplis):
+    errores = tmp_path / "09_Errores"
+    for carpeta in (proc, otros, pdfs, respaldo, duplis, errores):
         carpeta.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(dte_mod, "CARPETA_PROCESADOS", proc)
     monkeypatch.setattr(dte_mod, "CARPETA_OTROS_DTES", otros)
     monkeypatch.setattr(dte_mod, "CARPETA_DUPLICADOS", duplis)
+    monkeypatch.setattr(dte_mod, "CARPETA_ERRORES", errores)
     monkeypatch.setattr(xl_mod, "CARPETA_RESPALDO_PDF", pdfs)
     monkeypatch.setattr(api_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(api_mod, "CARPETA_PROCESADOS", proc)
@@ -49,9 +51,10 @@ def carpetas(tmp_path, monkeypatch):
     monkeypatch.setattr(api_mod, "CARPETA_RESPALDO_PDF", pdfs)
     monkeypatch.setattr(api_mod, "CARPETA_DESCARGAS_RESPALDO", respaldo)
     monkeypatch.setattr(api_mod, "CARPETA_DUPLICADOS", duplis)
+    monkeypatch.setattr(api_mod, "CARPETA_ERRORES", errores)
     return {
         "proc": proc, "otros": otros, "pdfs": pdfs,
-        "respaldo": respaldo, "duplis": duplis,
+        "respaldo": respaldo, "duplis": duplis, "errores": errores,
     }
 
 
@@ -210,3 +213,82 @@ def test_get_data_dir_respeta_override(monkeypatch, tmp_path):
     default = config_mod.get_data_dir()
     assert isinstance(default, Path)
     assert default.name in {"data", "Oculus_Workspace"}
+
+
+def test_pdf_sin_ia_retorna_none_sin_contaminar():
+    from src.backend.services.ocr_service import OCRService
+
+    ocr = OCRService.__new__(OCRService)
+    ocr.deepseek_api_key = ""
+    ocr.gemini_api_key = ""
+    ocr.llamaparse_api_key = ""
+    ocr._extract_local_text = lambda _p: "texto con mas de cincuenta caracteres para pasar el umbral......"
+    assert ocr.process_pdf_to_raw_json("cualquiera.pdf") is None
+
+
+def test_json_malformado_sin_ia_retorna_none():
+    from src.backend.services.ocr_service import OCRService
+
+    ocr = OCRService.__new__(OCRService)
+    ocr.deepseek_api_key = ""
+    ocr.gemini_api_key = ""
+    ocr.llamaparse_api_key = ""
+    assert ocr.process_raw_json_text("{no es json") is None
+    assert ocr.process_raw_json_text("") is None
+
+
+def test_flujo_lineal_fallos_van_a_errores(tmp_path, monkeypatch, carpetas):
+    from src.backend.services.dte_service import DTEService
+
+    monkeypatch.setattr(dte_mod, "db", DBManager(tmp_path / "lineal.db"))
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "PINELI_9_01032025_doc.pdf").write_bytes(b"%PDF-1.4 falso")
+    (staging / "PINELI_9_01032025_roto.json").write_text("{no es json", encoding="utf-8")
+
+    svc = DTEService()
+    svc.ocr.process_pdf_to_raw_json = lambda _p: None  # sin datos
+    res = svc.process_downloads(source_dir=staging)
+
+    # El PDF y el JSON comparten UID: fallan como un solo documento.
+    assert res["errores"] == 1
+    # Nada se queda en descargas: sin reintentos eternos.
+    assert [p for p in staging.iterdir() if p.is_file()] == []
+    destino = carpetas["errores"] / "PINELI" / "2025-03"
+    assert sum(1 for p in destino.iterdir() if p.is_file()) == 2
+
+
+def test_flujo_lineal_pdf_huerfano_fallido(tmp_path, monkeypatch, carpetas):
+    from src.backend.services.dte_service import DTEService
+
+    monkeypatch.setattr(dte_mod, "db", DBManager(tmp_path / "lineal2.db"))
+    staging = tmp_path / "staging2"
+    staging.mkdir()
+    (staging / "PINELI_7_01032025_solo.pdf").write_bytes(b"%PDF-1.4 falso")
+    (staging / "OTRO_8_01032025_roto.json").write_text("{no es json", encoding="utf-8")
+
+    svc = DTEService()
+    svc.ocr.process_pdf_to_raw_json = lambda _p: None  # sin datos
+    res = svc.process_downloads(source_dir=staging)
+
+    assert res["errores"] == 2
+    assert [p for p in staging.iterdir() if p.is_file()] == []
+    pineli = carpetas["errores"] / "PINELI" / "2025-03"
+    otro = carpetas["errores"] / "OTRO" / "2025-03"
+    assert sum(1 for p in pineli.iterdir() if p.is_file()) == 1
+    assert sum(1 for p in otro.iterdir() if p.is_file()) == 1
+
+
+def test_diagnostics_cuenta_errores(tmp_path, monkeypatch, carpetas):
+    api, _db = _api_con_db_aislada(tmp_path, monkeypatch)
+    (carpetas["proc"] / "Demo" / "2026-05").mkdir(parents=True, exist_ok=True)
+    (carpetas["proc"] / "Demo" / "2026-05" / "a.json").write_text("{}", encoding="utf-8")
+    err = carpetas["errores"] / "Demo" / "2026-05"
+    err.mkdir(parents=True, exist_ok=True)
+    (err / "malo.pdf").write_bytes(b"x")
+
+    d = api.get_excel_diagnostics("Demo", "2026-05")
+
+    assert d["json_count"] == 1
+    assert d["pdf_count"] == 0
+    assert d["error_count"] == 1

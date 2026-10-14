@@ -36,6 +36,7 @@ CARPETA_RESPALDO_PDF = DATA_DIR / "05_Respaldo_PDF"
 CARPETA_ADJUNTOS_OTROS = DATA_DIR / "06_Adjuntos_Otros"
 CARPETA_DESCARGAS_RESPALDO = DATA_DIR / "07_Descargas_Respaldo"
 CARPETA_DUPLICADOS = DATA_DIR / "08_Duplicados"
+CARPETA_ERRORES = DATA_DIR / "09_Errores"
 CARPETA_BD = DATA_DIR / "db"
 CARPETA_LOGS = DATA_DIR / "logs"
 
@@ -47,6 +48,7 @@ def init_directories():
         CARPETA_ADJUNTOS_OTROS,
         CARPETA_DESCARGAS_RESPALDO,
         CARPETA_DUPLICADOS,
+        CARPETA_ERRORES,
         CARPETA_BD, CARPETA_LOGS
     ]
     for d in directories:
