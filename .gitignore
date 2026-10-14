@@ -1,3 +1,4 @@
+
 venv/
 .venv/
 __pycache__/
@@ -9,3 +10,4 @@ datos de prueba/
 data/
 PRUEBAS/
 *.zip
+>>>>>>> 3068c1cec7f667668d856a002b31f174bb2e3b81

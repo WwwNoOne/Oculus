@@ -1,3 +1,4 @@
+
 pywebview
 Flask
 pdfplumber
@@ -15,3 +16,4 @@ google-genai
 llama-parse
 msal
 keyring
+>>>>>>> 3068c1cec7f667668d856a002b31f174bb2e3b81
