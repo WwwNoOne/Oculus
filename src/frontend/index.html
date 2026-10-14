@@ -429,6 +429,18 @@
                             </div>
                         </div>
 
+                        <div class="form-section mt-4">
+                            <h4>LlamaParse (Visión para PDFs escaneados)</h4>
+                            <div class="form-group">
+                                <label>LlamaParse API Key <span id="llamaparse-status" class="badge badge-teal" style="display:none; margin-left: 10px;">Configurada</span></label>
+                                <div style="display:flex; gap:10px;">
+                                    <input type="password" id="api-llamaparse" class="premium-input" placeholder="llx-..." style="flex:1;">
+                                    <button class="btn btn-outline-teal" id="btn-change-llamaparse" type="button" style="display:none;">Cambiar clave</button>
+                                </div>
+                                <small class="form-hint">Solo se usa en PDFs sin texto extraíble. La mayoría de documentos (JSON) no gastan crédito.</small>
+                            </div>
+                        </div>
+
                         <button class="btn btn-teal full-width mt-4" id="btn-save-apis">
                             <i class="fa-solid fa-save"></i> Guardar Configuración
                         </button>

@@ -1083,9 +1083,11 @@ document.addEventListener("DOMContentLoaded", () => {
         btnSaveApis.addEventListener("click", async () => {
             const deepseekEl = document.getElementById("api-deepseek");
             const geminiEl = document.getElementById("api-gemini");
+            const llamaparseEl = document.getElementById("api-llamaparse");
             const data = {
                 deepseek: deepseekEl ? deepseekEl.value : "",
-                gemini: geminiEl ? geminiEl.value : ""
+                gemini: geminiEl ? geminiEl.value : "",
+                llamaparse: llamaparseEl ? llamaparseEl.value : ""
             };
             // Conservar claves de UI (p. ej. last_excel_dir) al guardar.
             try {
@@ -1110,6 +1112,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         if(geminiStatus) geminiStatus.style.display = "inline-block";
                         const button = document.getElementById("btn-change-gemini");
                         if(button && geminiEl) { button.style.display = "inline-block"; geminiEl.disabled = true; }
+                    }
+                    if(data.llamaparse) {
+                        const lpStatus = document.getElementById("llamaparse-status");
+                        if(lpStatus) lpStatus.style.display = "inline-block";
+                        const button = document.getElementById("btn-change-llamaparse");
+                        if(button && llamaparseEl) { button.style.display = "inline-block"; llamaparseEl.disabled = true; }
                     }
                 }
             } catch (e) {
@@ -1142,6 +1150,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     if(geminiStatus) geminiStatus.style.display = "inline-block";
                     if(geminiButton) geminiButton.style.display = "inline-block";
                 }
+                const llamaparseEl = document.getElementById("api-llamaparse");
+                const llamaparseStatus = document.getElementById("llamaparse-status");
+                const llamaparseButton = document.getElementById("btn-change-llamaparse");
+                if(config.llamaparse && llamaparseEl) {
+                    llamaparseEl.value = config.llamaparse;
+                    llamaparseEl.disabled = true;
+                    if(llamaparseStatus) llamaparseStatus.style.display = "inline-block";
+                    if(llamaparseButton) llamaparseButton.style.display = "inline-block";
+                }
             }
         } catch (e) {
             console.error(e);
@@ -1164,5 +1181,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     enableApiChange("api-deepseek", "deepseek-status", "btn-change-deepseek");
     enableApiChange("api-gemini", "gemini-status", "btn-change-gemini");
+    enableApiChange("api-llamaparse", "llamaparse-status", "btn-change-llamaparse");
 
 });

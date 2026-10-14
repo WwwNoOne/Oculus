@@ -11,6 +11,15 @@ try:
 except ImportError:
     genai = None
 
+try:
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", DeprecationWarning)
+        from llama_parse import LlamaParse
+except ImportError:
+    LlamaParse = None
+
 class OCRService:
     DEEPSEEK_MODEL = "deepseek-v4-flash"
     GEMINI_MODEL = "gemini-3.6-flash"
@@ -20,6 +29,8 @@ class OCRService:
         # 1. Intentar cargar desde el settings.json local
         self.deepseek_api_key = self._load_api_key("deepseek") or os.getenv("DEEPSEEK_API_KEY", "")
         self.gemini_api_key = self._load_api_key("gemini") or os.getenv("GEMINI_API_KEY", "")
+        # LlamaParse (vision para PDFs escaneados; plan gratuito generoso).
+        self.llamaparse_api_key = self._load_api_key("llamaparse") or os.getenv("LLAMA_CLOUD_API_KEY", "")
 
     def _load_api_key(self, key_name: str) -> str:
         try:
@@ -105,6 +116,26 @@ class OCRService:
                 raise
             return json.loads(content[start:end + 1])
 
+    def _extract_with_llamaparse(self, pdf_path: str) -> str:
+        """Extrae texto de PDFs escaneados con LlamaParse (vision).
+
+        Solo se llama cuando hay clave configurada y el PDF no tiene texto
+        extraible, asi no se consume credito en documentos normales.
+        """
+        if not self.llamaparse_api_key or LlamaParse is None:
+            return ""
+        try:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                parser = LlamaParse(api_key=self.llamaparse_api_key, result_type="markdown")
+                documents = parser.load_data(pdf_path)
+            textos = [getattr(doc, "text", "") or "" for doc in (documents or [])]
+            return "\n".join(textos).strip()
+        except Exception as e:
+            print(f"[!] LlamaParse fallo para {pdf_path}: {e}")
+            return ""
+
     def process_pdf_to_raw_json(self, pdf_path: str) -> dict:
         """
         Tubería principal: PyMuPDF -> DeepSeek -> JSON Crudo
@@ -113,9 +144,14 @@ class OCRService:
         
         # 1. Extracción gratuita
         texto_crudo = self._extract_local_text(pdf_path)
-        
+
+        # 1b. PDF escaneado (sin texto): vision con LlamaParse antes de rendirse.
+        if (not texto_crudo or len(texto_crudo) < 50) and self.llamaparse_api_key:
+            print("[*] PDF escaneado detectado. Extrayendo con LlamaParse...")
+            texto_crudo = self._extract_with_llamaparse(pdf_path)
+
         if not texto_crudo or len(texto_crudo) < 50:
-            print("[!] PDF escaneado detectado. Aquí entraría Gemini 3.6 Flash / LlamaParse.")
+            print("[!] PDF escaneado sin texto util. Configure LlamaParse para vision.")
             return {"error": "documento_escaneado", "requires_vision": True}
         
         # 2. Estructuración con DeepSeek (Gemini queda como respaldo)

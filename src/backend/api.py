@@ -468,10 +468,9 @@ class Api:
         
         # Encriptar las API keys antes de guardar a disco
         secure_data = data.copy()
-        if "gemini" in secure_data and secure_data["gemini"]:
-            secure_data["gemini"] = encrypt_data(secure_data["gemini"])
-        if "deepseek" in secure_data and secure_data["deepseek"]:
-            secure_data["deepseek"] = encrypt_data(secure_data["deepseek"])
+        for key_name in ("gemini", "deepseek", "llamaparse"):
+            if key_name in secure_data and secure_data[key_name]:
+                secure_data[key_name] = encrypt_data(secure_data[key_name])
         settings_file = DATA_DIR / "settings.json"
         with open(settings_file, "w", encoding="utf-8") as f:
             json.dump(secure_data, f, indent=4)
@@ -490,17 +489,16 @@ class Api:
                     settings = json.load(f)
                     
                     # Desencriptar las llaves para enviarlas al frontend
-                    if "gemini" in settings:
-                        settings["gemini"] = decrypt_data(settings["gemini"])
-                    if "deepseek" in settings:
-                        settings["deepseek"] = decrypt_data(settings["deepseek"])
+                    for key_name in ("gemini", "deepseek", "llamaparse"):
+                        if key_name in settings:
+                            settings[key_name] = decrypt_data(settings[key_name])
                     # Claves de UI (p. ej. ultima carpeta de destino) pasan tal cual.
                     settings.setdefault("last_excel_dir", "")
                     return settings
             except Exception:
                 pass
 
-        return {"gemini": "", "deepseek": "", "last_excel_dir": ""}
+        return {"gemini": "", "deepseek": "", "llamaparse": "", "last_excel_dir": ""}
 
     # --- EXPLORER ---
     def get_other_documents(self, client_filter="", date_filter=""):

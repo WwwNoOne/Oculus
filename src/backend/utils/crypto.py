@@ -41,6 +41,11 @@ def decrypt_data(token):
     if not token:
         return ""
     token = str(token)
+    if token.startswith("gAAAA"):
+        # Token Fernet de compilaciones anteriores (clave desconocida):
+        # se intenta con la clave derivada local y si falla se descarta
+        # para no enviar basura como API key.
+        return _decrypt_legacy_fernet(token)
     if not token.startswith(_PREFIX):
         # Valor heredado en texto plano: se devuelve sin modificar.
         return token
@@ -48,5 +53,18 @@ def decrypt_data(token):
         raw = base64.urlsafe_b64decode(token[len(_PREFIX):].encode("ascii"))
         key = _key()
         return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _decrypt_legacy_fernet(token):
+    """Mejor esfuerzo para tokens Fernet antiguos. Retorna "" si no se puede."""
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+    except ImportError:
+        return ""
+    try:
+        fernet_key = base64.urlsafe_b64encode(_key())
+        return Fernet(fernet_key).decrypt(token.encode("ascii")).decode("utf-8")
     except Exception:
         return ""
