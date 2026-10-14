@@ -994,6 +994,20 @@ button:focus:not(:focus-visible) {
     outline: none;
 }
 
+/* --- VISTA CORREOS APILADA (formulario arriba, cuentas abajo) --- */
+#view-emails {
+    flex-direction: column;
+}
+#view-emails .split-left {
+    max-width: 720px;
+    width: 100%;
+    flex: none;
+}
+#view-emails .split-right {
+    width: 100%;
+    flex: none;
+}
+
 /* --- RESPONSIVE LAYOUT --- */
 @media (max-width: 1250px) {
     .app-container { padding: 12px; gap: 12px; }
