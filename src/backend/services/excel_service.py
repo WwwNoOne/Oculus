@@ -5,7 +5,7 @@ import pandas as pd
 from pathlib import Path
 from src.backend.utils.config import CARPETA_PROCESADOS, CARPETA_ERRORES
 from src.backend.database.db_manager import db
-from src.backend.utils.json_utils import extract_identificacion, get_document_sections, extract_sello, get_sello_from_mh_response
+from src.backend.utils.json_utils import extract_identificacion, get_document_sections, extract_sello, get_sello_from_mh_response, fecha_emision_valida
 
 class ExcelService:
     def __init__(self):
@@ -69,6 +69,10 @@ class ExcelService:
         """
         documento = self._get_document(data)
         identificacion = extract_identificacion(data)
+
+        # Fecha real obligatoria tambien en la entrega (mata 2000/00/00).
+        if not fecha_emision_valida(identificacion.get("fecEmi", "")):
+            return None, ""
 
         # 1. Filtro estricto por Tipo DTE
         tipo_dte = self._extract_tipo_dte(identificacion)

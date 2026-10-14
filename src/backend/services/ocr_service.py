@@ -24,11 +24,57 @@ class OCRService:
     GEMINI_MODEL = "gemini-3.6-flash"
     AI_TIMEOUT_SECONDS = 180
 
+    # Esquema compacto para la extraccion estructurada de LlamaParse (IA principal).
+    DTE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "identificacion": {
+                "type": "object",
+                "properties": {
+                    "codigoGeneracion": {"type": "string"},
+                    "tipoDte": {"type": "string"},
+                    "numeroControl": {"type": "string"},
+                    "fecEmi": {"type": "string"},
+                },
+            },
+            "emisor": {
+                "type": "object",
+                "properties": {
+                    "nombre": {"type": "string"},
+                    "nit": {"type": "string"},
+                    "nrc": {"type": "string"},
+                },
+            },
+            "resumen": {
+                "type": "object",
+                "properties": {
+                    "subTotal": {"type": "number"},
+                    "totalGravada": {"type": "number"},
+                    "totalPagar": {"type": "number"},
+                },
+            },
+            "selloRecepcion": {
+                "type": "object",
+                "properties": {"selloRecepcion": {"type": "string"}},
+            },
+        },
+    }
+
+    @staticmethod
+    def _es_falta_credito(exc) -> bool:
+        """Detecta credito/cuota agotada para avisar y pasar a la cadena de pago."""
+        texto = str(exc).lower()
+        return any(
+            clave in texto
+            for clave in ("quota", "credit", "402", "429", "payment",
+                          "billing", "exceed", "usage limit")
+        )
+
     def __init__(self):
         # 1. Intentar cargar desde el settings.json local
         self.deepseek_api_key = self._load_api_key("deepseek") or os.getenv("DEEPSEEK_API_KEY", "")
         self.gemini_api_key = self._load_api_key("gemini") or os.getenv("GEMINI_API_KEY", "")
-        # LlamaParse (vision para PDFs escaneados; plan gratuito generoso).
+        # LlamaParse: IA principal (primero); al agotarse el credito sigue DeepSeek/Gemini.
         self.llamaparse_api_key = self._load_api_key("llamaparse") or os.getenv("LLAMA_CLOUD_API_KEY", "")
 
     def _load_api_key(self, key_name: str) -> str:
@@ -115,48 +161,64 @@ class OCRService:
                 raise
             return json.loads(content[start:end + 1])
 
-    def _extract_with_llamaparse(self, pdf_path: str) -> str:
-        """Extrae texto de PDFs escaneados con LlamaParse (vision).
+    def _extraer_estructurado_llamaparse(self, pdf_path: str):
+        """LlamaParse como IA principal: PDF -> JSON estructurado directo.
 
-        Solo se llama cuando hay clave configurada y el PDF no tiene texto
-        extraible, asi no se consume credito en documentos normales.
+        Retorna dict o None (sin clave, sin credito o fallo: sigue la cadena de pago).
         """
         if not self.llamaparse_api_key or LlamaParse is None:
-            return ""
+            return None
         try:
             import warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
-                parser = LlamaParse(api_key=self.llamaparse_api_key, result_type="markdown")
-                documents = parser.load_data(pdf_path)
-            textos = [getattr(doc, "text", "") or "" for doc in (documents or [])]
-            return "\n".join(textos).strip()
+                parser = LlamaParse(
+                    api_key=self.llamaparse_api_key,
+                    structured_output=True,
+                    structured_output_json_schema=self.DTE_SCHEMA,
+                    structured_output_json_schema_name="dte",
+                    verbose=False,
+                    show_progress=False,
+                )
+                resultados = parser.get_json(pdf_path)
+            for item in (resultados or []):
+                if not isinstance(item, dict) or not item:
+                    continue
+                data = item.get("data") if isinstance(item.get("data"), dict) else item
+                if extract_identificacion(data).get("codigoGeneracion"):
+                    print("[*] LlamaParse (principal) extrajo el documento.")
+                    return data
+            print("[!] LlamaParse no devolvio datos utiles.")
+            return None
         except Exception as e:
-            print(f"[!] LlamaParse fallo para {pdf_path}: {e}")
-            return ""
+            if self._es_falta_credito(e):
+                print("[!] LlamaParse sin credito: pasando a DeepSeek/Gemini.")
+            else:
+                print(f"[!] LlamaParse fallo: {e}")
+            return None
 
     def process_pdf_to_raw_json(self, pdf_path: str) -> dict | None:
         """
-        Tubería principal: PyMuPDF -> DeepSeek -> JSON Crudo
+        Tubería principal: LlamaParse (principal) -> DeepSeek -> Gemini (pago).
 
         Lineal y sin retroceso: si no hay datos (sin IA, ilegible o fallo),
         retorna None en vez de un JSON con marcas de fallo o simulado.
         """
-        print(f"[*] Iniciando Extracción Híbrida (PyMuPDF + DeepSeek) para: {pdf_path}")
-        
-        # 1. Extracción gratuita
+        print(f"[*] Iniciando Extracción (LlamaParse -> DeepSeek/Gemini) para: {pdf_path}")
+
+        # 1. IA principal: LlamaParse con salida estructurada.
+        if self.llamaparse_api_key:
+            datos = self._extraer_estructurado_llamaparse(pdf_path)
+            if datos is not None:
+                return datos
+
+        # 2. Extracción local gratuita para la cadena de pago.
         texto_crudo = self._extract_local_text(pdf_path)
-
-        # 1b. PDF escaneado (sin texto): vision con LlamaParse antes de rendirse.
-        if (not texto_crudo or len(texto_crudo) < 50) and self.llamaparse_api_key:
-            print("[*] PDF escaneado detectado. Extrayendo con LlamaParse...")
-            texto_crudo = self._extract_with_llamaparse(pdf_path)
-
         if not texto_crudo or len(texto_crudo) < 50:
-            print("[!] PDF escaneado sin texto util. Configure LlamaParse para vision.")
+            print("[!] PDF escaneado sin texto y LlamaParse no disponible.")
             return None
 
-        # 2. Estructuración con DeepSeek (Gemini queda como respaldo)
+        # 3. Cadena de pago: DeepSeek -> Gemini.
         if not self.deepseek_api_key and not self.gemini_api_key:
             print("[!] No hay API Key de DeepSeek ni Gemini. Sin datos.")
             return None

@@ -2,12 +2,11 @@ import os
 import json
 import shutil
 import re
-import datetime
 from pathlib import Path
 from src.backend.utils.config import DATA_DIR, CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_DUPLICADOS, CARPETA_ERRORES
 from src.backend.database.db_manager import db
 from src.backend.services.ocr_service import OCRService
-from src.backend.utils.json_utils import extract_identificacion
+from src.backend.utils.json_utils import extract_identificacion, fecha_emision_valida
 
 class DTEService:
     def __init__(self):
@@ -97,13 +96,7 @@ class DTEService:
 
     def _fecha_valida(self, fecha: str) -> bool:
         """Fecha calendario real entre 1990 y 2100 (mata 2000/00/00 y similares)."""
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha or ""):
-            return False
-        try:
-            parsed = datetime.datetime.strptime(fecha, "%Y-%m-%d")
-        except ValueError:
-            return False
-        return 1990 <= parsed.year <= 2100
+        return fecha_emision_valida(fecha)
 
     def _valido(self, data) -> bool:
         """Dato utilizable: codigo + tipo conocido/rescatable + fecha real."""

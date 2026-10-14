@@ -8,7 +8,6 @@ from src.backend.utils.config import (
     CARPETA_ERRORES,
     DATA_DIR,
     DB_PATH,
-    CARPETA_DESCARGAS_RESPALDO,
 )
 
 class Api:
@@ -16,9 +15,6 @@ class Api:
         self.dte_service = DTEService()
         self.orchestrator = Orchestrator()
         self.dte_service.migrate_legacy_documents()
-        self.recovery_thread = None
-        self.recovery_stop_requested = False
-        self.recovery_status = {"status": "IDLE", "message": ""}
     
     def get_stats(self):
         """Obtiene las estadísticas reales de la base de datos"""
@@ -49,133 +45,18 @@ class Api:
         self.orchestrator.stop(wait=True)
         return True, "Proceso detenido correctamente."
 
-    def start_recovery(self, account_email, target_alias, start_date, end_date, auto_cleanup=False):
-        import threading
-        from datetime import date
-        from src.backend.database.db_manager import db
-        from src.backend.services.email_service import EmailService
-
-        if self.orchestrator.running or (self.recovery_thread and self.recovery_thread.is_alive()):
-            return False, "Detenga el proceso normal antes de iniciar una recuperación."
-        try:
-            start = date.fromisoformat(start_date)
-            end = date.fromisoformat(end_date)
-            if end <= start:
-                return False, "La fecha final debe ser posterior a la fecha inicial."
-        except (TypeError, ValueError):
-            return False, "Rango de fechas inválido."
-        account = next((item for item in db.get_all_emails() if item.get("email") == account_email), None)
-        if not account or not target_alias.strip():
-            return False, "Seleccione una cuenta y un alias de respaldo."
-
-        target_alias = target_alias.strip()
-        # Marcar el alias como recuperacion para que no ensucie Gestion de DTEs.
-        db.set_company_kind(target_alias, "recovery")
-
-        recovery_dir = CARPETA_DESCARGAS_RESPALDO / target_alias
-        self.recovery_stop_requested = False
-        self.recovery_status = {"status": "RUNNING", "message": "Recuperación en curso"}
-
-        def worker():
-            try:
-                mail = EmailService(str(recovery_dir), str(recovery_dir / "adjuntos_otros"))
-                result = mail.descargar_correos(
-                    cuenta=target_alias, servidor=account["server"], puerto=account["port"],
-                    usuario=account["email"], password=account["password_encrypted"],
-                    protocolo="POP3" if account["port"] == 995 else "IMAP", estado_key=account["email"],
-                    start_date=start_date, end_date=end_date,
-                    should_stop=lambda: self.recovery_stop_requested,
-                )
-                if not self.recovery_stop_requested:
-                    result.update(self.dte_service.process_downloads(
-                        client_filter=target_alias, source_dir=recovery_dir,
-                        destination_alias=target_alias,
-                    ))
-                if auto_cleanup and not self.recovery_stop_requested:
-                    # Solo se elimina la copia de trabajo (descargas de respaldo del alias).
-                    import shutil
-                    shutil.rmtree(recovery_dir, ignore_errors=True)
-                    result["cleanup"] = "copia de trabajo eliminada"
-                self.recovery_status = {"status": "IDLE", "message": f"Recuperación finalizada: {result}"}
-            except Exception as exc:
-                self.recovery_status = {"status": "ERROR", "message": str(exc)}
-
-        self.recovery_thread = threading.Thread(target=worker, daemon=True)
-        self.recovery_thread.start()
-        return True, "Recuperación iniciada."
-
-    def get_recovery_status(self):
-        return self.recovery_status
-
-    def stop_recovery(self):
-        self.recovery_stop_requested = True
-        return True, "La recuperación terminará el mensaje actual."
-    
-    def get_clients(self, include_recovery=False):
+    def get_clients(self):
         if not CARPETA_PROCESADOS.exists():
             return []
-        clients = sorted(f.name for f in CARPETA_PROCESADOS.iterdir() if f.is_dir())
-        if include_recovery:
-            return clients
-        # Los alias de recuperacion quedan ocultos salvo que se pidan explicitamente.
-        return [c for c in clients if db.get_company_kind(c) != "recovery"]
-
-    def get_recovery_backups(self):
-        """Lista los respaldos de recuperacion con tamano, fecha y conteo de archivos."""
-        backups = []
-        seen = set()
-        for alias in self.get_clients(include_recovery=True):
-            if db.get_company_kind(alias) != "recovery":
-                continue
-            seen.add(alias.casefold())
-            backups.append(self._describe_backup(alias))
-        # Alias marcados en BD pero sin carpeta aun, o carpetas de respaldo sueltas.
-        if CARPETA_DESCARGAS_RESPALDO.exists():
-            for folder in CARPETA_DESCARGAS_RESPALDO.iterdir():
-                if folder.is_dir() and folder.name.casefold() not in seen:
-                    seen.add(folder.name.casefold())
-                    backups.append(self._describe_backup(folder.name))
-        return sorted(backups, key=lambda b: b["alias"].lower())
-
-    def _describe_backup(self, alias):
-        roots = [
-            CARPETA_PROCESADOS / alias,
-            CARPETA_OTROS_DTES / alias,
-            DATA_DIR / "05_Respaldo_PDF" / alias,
-            CARPETA_DESCARGAS_RESPALDO / alias,
-            CARPETA_DUPLICADOS / alias,
-            CARPETA_ERRORES / alias,
-        ]
-        total_files = 0
-        total_bytes = 0
-        latest_mtime = None
-        for root in roots:
-            if not root.exists():
-                continue
-            for path in root.rglob("*"):
-                if not path.is_file():
-                    continue
-                total_files += 1
-                try:
-                    total_bytes += path.stat().st_size
-                    mtime = path.stat().st_mtime
-                    if latest_mtime is None or mtime > latest_mtime:
-                        latest_mtime = mtime
-                except OSError:
-                    pass
-        return {
-            "alias": alias,
-            "files": total_files,
-            "size_bytes": total_bytes,
-            "updated": latest_mtime,
-        }
+        return sorted(f.name for f in CARPETA_PROCESADOS.iterdir() if f.is_dir())
 
     def delete_client_data(self, alias, confirm=True, force=False):
-        """Elimina las carpetas de trabajo de un alias y su registro en companies.
+        """Limpieza administrativa: elimina las carpetas de trabajo de un alias
+        y su registro en companies.
 
         Reglas de seguridad:
         - confirm debe ser True (confirmacion previa en la UI).
-        - Solo alias de tipo 'recovery', salvo force=True con doble confirmacion en UI.
+        - Solo alias marcados 'recovery', salvo force=True con doble confirmacion en UI.
         - El alias no puede contener '..', '/' ni '\\' y la ruta resuelta debe
           quedar dentro de DATA_DIR.
         - Nunca toca la BD de cuentas de correo (email_accounts intacta).
@@ -199,7 +80,6 @@ class Api:
             CARPETA_PROCESADOS / alias,
             CARPETA_OTROS_DTES / alias,
             DATA_DIR / "05_Respaldo_PDF" / alias,
-            CARPETA_DESCARGAS_RESPALDO / alias,
             CARPETA_DUPLICADOS / alias,
             CARPETA_ERRORES / alias,
         ]

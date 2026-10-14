@@ -38,10 +38,9 @@ def _escribir_json(path: Path, codigo: str, tipo="03", fecha="2026-05-10"):
 def carpetas(tmp_path, monkeypatch):
     proc = tmp_path / "02_Procesados"
     otros = tmp_path / "03_Otros_DTEs"
-    respaldo = tmp_path / "07_Descargas_Respaldo"
     duplis = tmp_path / "08_Duplicados"
     errores = tmp_path / "09_Errores"
-    for carpeta in (proc, otros, respaldo, duplis, errores):
+    for carpeta in (proc, otros, duplis, errores):
         carpeta.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(dte_mod, "CARPETA_PROCESADOS", proc)
     monkeypatch.setattr(dte_mod, "CARPETA_OTROS_DTES", otros)
@@ -52,12 +51,11 @@ def carpetas(tmp_path, monkeypatch):
     monkeypatch.setattr(api_mod, "DATA_DIR", tmp_path)
     monkeypatch.setattr(api_mod, "CARPETA_PROCESADOS", proc)
     monkeypatch.setattr(api_mod, "CARPETA_OTROS_DTES", otros)
-    monkeypatch.setattr(api_mod, "CARPETA_DESCARGAS_RESPALDO", respaldo)
     monkeypatch.setattr(api_mod, "CARPETA_DUPLICADOS", duplis)
     monkeypatch.setattr(api_mod, "CARPETA_ERRORES", errores)
     return {
         "proc": proc, "otros": otros,
-        "respaldo": respaldo, "duplis": duplis, "errores": errores,
+        "duplis": duplis, "errores": errores,
     }
 
 
@@ -215,7 +213,7 @@ def test_delete_client_data_rechaza_normal_sin_force(carpetas, basedatos):
 def test_delete_client_data_elimina_recovery_sin_tocar_correos(tmp_path, carpetas, basedatos):
     basedatos.set_company_kind("RP1", "recovery")
     basedatos.add_email("EmpresaX", "cuenta@empresa.com", "secreto", "imap.gmail.com", 993)
-    for key in ("proc", "otros", "respaldo", "duplis", "errores"):
+    for key in ("proc", "otros", "duplis", "errores"):
         destino = carpetas[key] / "RP1"
         destino.mkdir(parents=True, exist_ok=True)
         (destino / "f.pdf").write_bytes(b"x")
@@ -226,8 +224,8 @@ def test_delete_client_data_elimina_recovery_sin_tocar_correos(tmp_path, carpeta
     ok, msg = _api().delete_client_data("RP1", confirm=True, force=False)
 
     assert ok is True
-    assert "6 archivos" in msg
-    for key in ("proc", "otros", "respaldo", "duplis", "errores"):
+    assert "5 archivos" in msg
+    for key in ("proc", "otros", "duplis", "errores"):
         assert not (carpetas[key] / "RP1").exists()
     assert not legado.exists()
     assert basedatos.get_company_kind("RP1") is None
@@ -290,14 +288,42 @@ def test_crypto_descarta_fernet_antiguo_sin_clave():
     assert decrypt_data("") == ""
 
 
-def test_llamaparse_sin_clave_no_hace_red(tmp_path):
+def test_llamaparse_principal_sin_clave_no_hace_red(tmp_path):
     from src.backend.services.ocr_service import OCRService
 
     ocr = OCRService.__new__(OCRService)
     ocr.llamaparse_api_key = ""
     pdf = tmp_path / "vacio.pdf"
     pdf.write_bytes(b"%PDF-1.4 falso")
-    assert ocr._extract_with_llamaparse(str(pdf)) == ""
+    assert ocr._extraer_estructurado_llamaparse(str(pdf)) is None
+
+
+def test_llamaparse_sin_credito_pasa_a_pago():
+    from src.backend.services.ocr_service import OCRService
+
+    assert OCRService._es_falta_credito(Exception("402 Payment Required: quota exceeded")) is True
+    assert OCRService._es_falta_credito(Exception("rate limit 429 exceeded")) is True
+    assert OCRService._es_falta_credito(Exception("timeout de red")) is False
+
+
+def test_fecha_emision_valida_mata_fechas_absurdas():
+    from src.backend.utils.json_utils import fecha_emision_valida
+
+    assert fecha_emision_valida("2026-05-10") is True
+    assert fecha_emision_valida("2000-00-00") is False
+    assert fecha_emision_valida("2026-13-01") is False
+    assert fecha_emision_valida("2026-02-30") is False
+    assert fecha_emision_valida("") is False
+    assert fecha_emision_valida(None) is False
+
+
+def test_excel_omite_fecha_invalida():
+    from src.backend.services.excel_service import ExcelService
+
+    xl = ExcelService()
+    data = _doc_valido("CX", fecha="2000-00-00")
+    row, _codigo = xl._fila_desde_data(data, 1)
+    assert row is None
 
 
 def test_get_data_dir_respeta_override(monkeypatch, tmp_path):

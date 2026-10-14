@@ -5,6 +5,8 @@ anidados dentro de respuestas (p. ej. "detalleDTE", "respuesta") o con
 variantes de nombres. Estas funciones buscan de forma tolerante sin
 levantar excepciones.
 """
+import re
+from datetime import datetime as _datetime
 
 
 def find_section(data, name):
@@ -117,3 +119,14 @@ def get_sello_from_mh_response(data):
         if found:
             return found
     return ""
+
+
+def fecha_emision_valida(fecha) -> bool:
+    """Fecha calendario real entre 1990 y 2100 (mata 2000/00/00 y similares)."""
+    if not isinstance(fecha, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha):
+        return False
+    try:
+        parsed = _datetime.strptime(fecha, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return 1990 <= parsed.year <= 2100
