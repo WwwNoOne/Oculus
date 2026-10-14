@@ -7,7 +7,8 @@ python-dotenv
 pandas
 openpyxl
 imap-tools
-PyMuPDFrapidocr-onnxruntime
+PyMuPDF
+rapidocr-onnxruntime
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
@@ -16,4 +17,4 @@ google-genai
 llama-parse
 msal
 keyring
->>>>>>> 3068c1cec7f667668d856a002b31f174bb2e3b81
+pyinstaller
