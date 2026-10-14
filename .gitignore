@@ -7,4 +7,5 @@ dist/
 *.spec
 datos de prueba/
 data/
+PRUEBAS/
 *.zip

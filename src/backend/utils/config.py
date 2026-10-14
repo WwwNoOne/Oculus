@@ -7,7 +7,13 @@ def get_data_dir() -> Path:
     Retorna la ruta donde se guardará la base de datos y los PDFs.
     Si estamos en producción (.exe), usa Documentos para evitar pérdida de datos.
     Si estamos desarrollando, usa la carpeta local.
+
+    La variable de entorno OCULUS_DATA_DIR permite apuntar a un workspace
+    aislado (p. ej. pruebas con PRUEBAS/salida sin tocar los datos reales).
     """
+    override = os.environ.get("OCULUS_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
     if getattr(sys, 'frozen', False):
         # Producción: C:\Users\Usuario\Documents\Oculus_Workspace
         return Path.home() / "Documents" / "Oculus_Workspace"

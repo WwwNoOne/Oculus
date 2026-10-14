@@ -177,3 +177,36 @@ def test_stem_key_ignora_standard_y_sufijos():
     assert ExcelService._stem_key("Doc_standard.json") == "doc"
     assert ExcelService._stem_key("DOC_STANDARD_2.PDF") == "doc"
     assert ExcelService._stem_key("factura_1_2.pdf") == "factura"
+
+
+def test_crypto_descarta_fernet_antiguo_sin_clave():
+    from src.backend.utils.crypto import decrypt_data, encrypt_data
+
+    # Tokens Fernet de compilaciones anteriores (clave desconocida) no deben
+    # usarse como API key: se descartan con "".
+    assert decrypt_data("gAAAAABonauthentictokenimposiblededescifrar") == ""
+    # Round-trip del esquema actual.
+    assert decrypt_data(encrypt_data("llx-clave-secreta")) == "llx-clave-secreta"
+    assert decrypt_data("") == ""
+
+
+def test_llamaparse_sin_clave_no_hace_red(tmp_path):
+    from src.backend.services.ocr_service import OCRService
+
+    ocr = OCRService.__new__(OCRService)
+    ocr.llamaparse_api_key = ""
+    pdf = tmp_path / "vacio.pdf"
+    pdf.write_bytes(b"%PDF-1.4 falso")
+    assert ocr._extract_with_llamaparse(str(pdf)) == ""
+
+
+def test_get_data_dir_respeta_override(monkeypatch, tmp_path):
+    import os
+    from src.backend.utils import config as config_mod
+
+    monkeypatch.setenv("OCULUS_DATA_DIR", str(tmp_path / "workspace"))
+    assert config_mod.get_data_dir() == tmp_path / "workspace"
+    monkeypatch.delenv("OCULUS_DATA_DIR", raising=False)
+    default = config_mod.get_data_dir()
+    assert isinstance(default, Path)
+    assert default.name in {"data", "Oculus_Workspace"}
