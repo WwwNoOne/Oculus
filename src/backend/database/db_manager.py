@@ -87,6 +87,11 @@ class DBManager:
                 cursor.execute("ALTER TABLE companies ADD COLUMN kind TEXT DEFAULT 'normal'")
             except sqlite3.OperationalError:
                 pass # La columna ya existe
+            # Cuentas OAuth (login oficial) vs contrasena.
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN auth_type TEXT DEFAULT 'password'")
+            except sqlite3.OperationalError:
+                pass # La columna ya existe
             try:
                 cursor.execute("UPDATE companies SET kind = 'normal' WHERE kind IS NULL OR TRIM(kind) = ''")
             except sqlite3.OperationalError:
@@ -103,7 +108,7 @@ class DBManager:
     def get_all_emails(self):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, email, client, password_encrypted, server, port, start_date, active, last_sync FROM email_accounts")
+            cursor.execute("SELECT id, email, client, password_encrypted, server, port, start_date, active, last_sync, auth_type FROM email_accounts")
             columns = [column[0] for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
@@ -257,15 +262,18 @@ class DBManager:
             except sqlite3.IntegrityError:
                 return False, "Ese alias ya está registrado"
 
-    def add_email(self, client, email, password_enc, server, port, start_date='2026-05-01'):
+    def add_email(self, client, email, password_enc, server, port, start_date='2026-05-01', auth_type='password'):
+        auth_type = (auth_type or 'password').strip().lower()
+        if auth_type not in ('password', 'google', 'microsoft'):
+            auth_type = 'password'
         with self._get_connection() as conn:
             cursor = conn.cursor()
             try:
                 if client and client.strip():
                     cursor.execute("INSERT OR IGNORE INTO companies (alias) VALUES (?)", (client.strip(),))
                 cursor.execute(
-                    "INSERT INTO email_accounts (email, client, password_encrypted, server, port, start_date) VALUES (?, ?, ?, ?, ?, ?)",
-                    (email, client, password_enc, server, port, start_date)
+                    "INSERT INTO email_accounts (email, client, password_encrypted, server, port, start_date, auth_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (email, client, password_enc, server, port, start_date, auth_type)
                 )
                 conn.commit()
                 return True, "Cuenta añadida correctamente"
@@ -274,17 +282,24 @@ class DBManager:
             except Exception as e:
                 return False, str(e)
 
-    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01'):
+    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01', auth_type=None):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             try:
+                if auth_type is None:
+                    cursor.execute("SELECT auth_type FROM email_accounts WHERE email = ?", (old_email,))
+                    row = cursor.fetchone()
+                    auth_type = (row[0] if row and row[0] else 'password')
+                auth_type = (auth_type or 'password').strip().lower()
+                if auth_type not in ('password', 'google', 'microsoft'):
+                    auth_type = 'password'
                 if new_client and new_client.strip():
                     cursor.execute("INSERT OR IGNORE INTO companies (alias) VALUES (?)", (new_client.strip(),))
                 cursor.execute('''
-                    UPDATE email_accounts 
-                    SET client = ?, email = ?, password_encrypted = ?, server = ?, port = ?, start_date = ?
+                    UPDATE email_accounts
+                    SET client = ?, email = ?, password_encrypted = ?, server = ?, port = ?, start_date = ?, auth_type = ?
                     WHERE email = ?
-                ''', (new_client, new_email, new_password, new_server, new_port, new_start_date, old_email))
+                ''', (new_client, new_email, new_password, new_server, new_port, new_start_date, auth_type, old_email))
                 conn.commit()
                 return True, "Cuenta actualizada correctamente"
             except sqlite3.IntegrityError:

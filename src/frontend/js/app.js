@@ -60,6 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else if(targetView === "emails") {
                     loadCompanies();
                     loadEmails();
+                    loadOauthCreds();
                 } else if(targetView === "review") {
                     loadReviews();
                 } else if(targetView === "explorer") {
@@ -515,8 +516,53 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnSaveCompany = document.getElementById("btn-save-company");
 
     document.getElementById("email-provider").addEventListener("change", (e) => {
-        document.getElementById("custom-imap-group").style.display = e.target.value === "custom" ? "block" : "none";
+        updateEmailModeUI(e.target.value);
     });
+
+    // Estado del login oficial (OAuth) en curso para el formulario.
+    const oauthFormState = { provider: null, account: null };
+
+    function isOauthMode(mode) {
+        return mode === "gmail_oauth" || mode === "outlook_oauth" || mode === "m365";
+    }
+
+    function oauthProviderOf(mode) {
+        if(mode === "gmail_oauth") return "google";
+        if(mode === "outlook_oauth" || mode === "m365") return "microsoft";
+        return null;
+    }
+
+    function updateEmailModeUI(mode) {
+        const oauth = isOauthMode(mode);
+        const customGroup = document.getElementById("custom-imap-group");
+        const m365Group = document.getElementById("m365-group");
+        const oauthGroup = document.getElementById("oauth-group");
+        const passwordGroup = document.getElementById("password-group");
+        const portInput = document.getElementById("email-port");
+        if(customGroup) customGroup.style.display = mode === "custom" ? "block" : "none";
+        if(m365Group) m365Group.style.display = (mode === "custom" || mode === "m365") ? "block" : "none";
+        if(oauthGroup) oauthGroup.style.display = oauth ? "block" : "none";
+        if(passwordGroup) passwordGroup.style.display = oauth ? "none" : "block";
+        if(portInput) {
+            if(oauth) { portInput.value = "993"; portInput.disabled = true; }
+            else portInput.disabled = false;
+        }
+        if(!oauth) {
+            oauthFormState.provider = null;
+            oauthFormState.account = null;
+            const status = document.getElementById("oauth-status");
+            if(status) status.textContent = "Sin conectar.";
+        }
+    }
+
+    function emailServerFor(mode, customHost) {
+        if(mode === "gmail_oauth" || mode === "gmail_pass") return "imap.gmail.com";
+        if(mode === "outlook_oauth" || mode === "outlook_pass" || mode === "m365") return "outlook.office365.com";
+        return (customHost || "").trim();
+    }
+
+    // Estado inicial del formulario: login oficial de Gmail.
+    updateEmailModeUI("gmail_oauth");
 
     async function loadCompanies() {
         if(!clientSelect || !window.pywebview || !window.pywebview.api || !window.pywebview.api.get_companies) return;
@@ -587,6 +633,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                             <div style="display: flex; gap: 10px; align-items: center;">
                                 <span class="badge protocol-chip">${em.port === 995 ? 'POP3 995' : 'IMAP ' + em.port}</span>
+                                ${(em.auth_type === "google" || em.auth_type === "microsoft") ? '<span class="badge badge-teal">OAuth</span>' : ''}
                                 <span class="badge ${em.active ? 'badge-teal' : 'bg-danger'}">${em.active ? 'Activa' : 'Con error de conexión'}</span>
                                 <button class="icon-btn btn-edit-account" data-email="${em.email}" title="Editar Cuenta" aria-label="Editar cuenta ${em.email}"><i class="fa-solid fa-pen"></i></button>
                                 <button class="icon-btn btn-delete-account" data-email="${em.email}" title="Eliminar Cuenta" aria-label="Eliminar cuenta ${em.email}" style="color: var(--danger);"><i class="fa-solid fa-trash"></i></button>
@@ -613,17 +660,27 @@ document.addEventListener("DOMContentLoaded", () => {
                             // Try to match provider
                             const providerEl = document.getElementById("email-provider");
                             const customInput = document.getElementById("custom-imap-server");
-                            const customGroup = document.getElementById("custom-imap-group");
-                            
-                            if(account.server === "imap.gmail.com" || account.server === "outlook.office365.com") {
-                                providerEl.value = account.server;
-                                customGroup.style.display = "none";
-                            } else {
-                                providerEl.value = "custom";
-                                customGroup.style.display = "block";
-                                customInput.value = account.server;
+                            const authType = account.auth_type || "password";
+                            const domain = (account.email.split("@")[1] || "").toLowerCase();
+                            const msDomains = ["outlook.com", "hotmail.com", "live.com", "msn.com"];
+
+                            let mode = "custom";
+                            if(authType === "google") mode = "gmail_oauth";
+                            else if(authType === "microsoft") mode = msDomains.includes(domain) ? "outlook_oauth" : "m365";
+                            else if(account.server === "imap.gmail.com") mode = "gmail_pass";
+                            else if(account.server === "outlook.office365.com") mode = "outlook_pass";
+                            providerEl.value = mode;
+                            customInput.value = (mode === "custom") ? account.server : "";
+                            const forceBox = document.getElementById("email-force-m365");
+                            if(forceBox) forceBox.checked = (mode === "m365" && !msDomains.includes(domain));
+                            updateEmailModeUI(mode);
+                            if(isOauthMode(mode)) {
+                                oauthFormState.provider = oauthProviderOf(mode);
+                                oauthFormState.account = { correo: account.email };
+                                const status = document.getElementById("oauth-status");
+                                if(status) status.textContent = "Conectada (sesión guardada). Reconecte solo si falla.";
                             }
-                            
+
                             document.getElementById("email-password").value = "";
                         }
                     });
@@ -669,14 +726,17 @@ document.addEventListener("DOMContentLoaded", () => {
         const oldEmail = document.getElementById("email-old-address").value;
         const client = document.getElementById("email-client-name").value;
         const email = document.getElementById("email-address").value.trim();
-        let provider = document.getElementById("email-provider").value;
-        if(provider === "custom") provider = document.getElementById("custom-imap-server").value;
+        const mode = document.getElementById("email-provider").value;
+        const customHost = document.getElementById("custom-imap-server").value;
+        const server = emailServerFor(mode, customHost);
+        const oauth = isOauthMode(mode);
+        const authType = oauth ? oauthProviderOf(mode) : "password";
         const pass = document.getElementById("email-password").value;
         const portVal = document.getElementById("email-port") ? document.getElementById("email-port").value : "993";
         const port = parseInt(portVal, 10) || 993;
         const startDate = document.getElementById("email-start-date").value || "2026-05-01";
 
-        if(!client || !email || !provider) {
+        if(!client || !email || !server) {
             showToast("Seleccione una empresa y complete los campos obligatorios.");
             return;
         }
@@ -688,7 +748,11 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Puerto fuera de rango (1-65535).");
             return;
         }
-        if(!oldEmail && !pass) {
+        if(oauth && !oldEmail && !oauthFormState.account) {
+            showToast("Primero conecte la cuenta en el navegador.");
+            return;
+        }
+        if(!oauth && !oldEmail && !pass) {
             showToast("La contraseña es obligatoria para cuentas nuevas.");
             return;
         }
@@ -698,9 +762,9 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             let res;
             if(oldEmail) {
-                res = await window.pywebview.api.update_email(oldEmail, client, email, pass, provider, port, startDate);
+                res = await window.pywebview.api.update_email(oldEmail, client, email, pass, server, port, startDate, authType);
             } else {
-                res = await window.pywebview.api.add_email(client, email, pass, provider, port, startDate);
+                res = await window.pywebview.api.add_email(client, email, pass, server, port, startDate, authType);
             }
             showToast(res[1]);
             if(res[0]) {
@@ -721,10 +785,100 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("email-password").value = '';
         document.getElementById("form-account-title").innerHTML = '<i class="fa-solid fa-circle-plus teal-text"></i> Agregar Nueva Cuenta';
         document.getElementById("btn-cancel-edit").style.display = 'none';
-        document.getElementById("email-provider").value = "imap.gmail.com";
-        document.getElementById("custom-imap-group").style.display = "none";
+        document.getElementById("email-provider").value = "gmail_oauth";
+        const forceBox = document.getElementById("email-force-m365");
+        if(forceBox) forceBox.checked = false;
+        updateEmailModeUI("gmail_oauth");
         document.getElementById("email-port").value = "993";
         document.getElementById("email-start-date").value = "2026-05-01";
+    });
+
+    // --- OAUTH: login oficial en el navegador ---
+    let oauthPollTimer = null;
+
+    function oauthPollStatus(btn) {
+        if(oauthPollTimer) clearInterval(oauthPollTimer);
+        oauthPollTimer = setInterval(async () => {
+            try {
+                const st = await window.pywebview.api.oauth_status();
+                const statusEl = document.getElementById("oauth-status");
+                if(st.state === "OK") {
+                    clearInterval(oauthPollTimer);
+                    oauthPollTimer = null;
+                    oauthFormState.provider = oauthProviderOf(document.getElementById("email-provider").value);
+                    oauthFormState.account = st.account;
+                    if(statusEl) statusEl.textContent = st.message;
+                    showToast(st.message);
+                    setBusy(btn, false);
+                } else if(st.state === "ERROR") {
+                    clearInterval(oauthPollTimer);
+                    oauthPollTimer = null;
+                    if(statusEl) statusEl.textContent = st.message;
+                    showToast(st.message);
+                    setBusy(btn, false);
+                } else if(statusEl && st.message) {
+                    statusEl.textContent = st.message;
+                }
+            } catch(e) {}
+        }, 2000);
+    }
+
+    const btnOauthConnect = document.getElementById("btn-oauth-connect");
+    if(btnOauthConnect) btnOauthConnect.addEventListener("click", async () => {
+        const email = document.getElementById("email-address").value.trim();
+        const mode = document.getElementById("email-provider").value;
+        const provider = oauthProviderOf(mode);
+        if(!provider) return;
+        if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            showToast("Escriba primero un correo válido.");
+            return;
+        }
+        const forceBox = document.getElementById("email-force-m365");
+        const forzar = mode === "m365" || !!(forceBox && forceBox.checked);
+        setBusy(btnOauthConnect, true, "Abriendo navegador...");
+        try {
+            const res = await window.pywebview.api.oauth_start(email, provider, null, forzar);
+            showToast(res[1]);
+            if(res[0]) oauthPollStatus(btnOauthConnect);
+            else setBusy(btnOauthConnect, false);
+        } catch(e) {
+            showToast("No se pudo iniciar el login.");
+            setBusy(btnOauthConnect, false);
+        }
+    });
+
+    // --- Paso 0: credenciales OAuth de la app ---
+    async function loadOauthCreds() {
+        try {
+            if(!window.pywebview || !window.pywebview.api) return;
+            const config = await window.pywebview.api.get_settings();
+            const gid = document.getElementById("oauth-google-id");
+            const mid = document.getElementById("oauth-ms-id");
+            const gstatus = document.getElementById("oauth-google-status");
+            if(gid && config.google_client_id) gid.value = config.google_client_id;
+            if(mid && config.microsoft_client_id) mid.value = config.microsoft_client_id;
+            if(gstatus && config.google_client_secret) gstatus.style.display = "inline-block";
+        } catch(e) {}
+    }
+
+    const btnSaveOauthCreds = document.getElementById("btn-save-oauth-creds");
+    if(btnSaveOauthCreds) btnSaveOauthCreds.addEventListener("click", async () => {
+        setBusy(btnSaveOauthCreds, true, "Guardando...");
+        try {
+            const current = await window.pywebview.api.get_settings();
+            const secretInput = document.getElementById("oauth-google-secret").value;
+            current.google_client_id = document.getElementById("oauth-google-id").value.trim();
+            current.microsoft_client_id = document.getElementById("oauth-ms-id").value.trim();
+            if(secretInput) current.google_client_secret = secretInput;
+            await window.pywebview.api.save_settings(current);
+            showToast("Credenciales OAuth guardadas.");
+            await loadOauthCreds();
+            document.getElementById("oauth-google-secret").value = "";
+        } catch(e) {
+            showToast("Error al guardar credenciales.");
+        } finally {
+            setBusy(btnSaveOauthCreds, false);
+        }
     });
 
     // --- MANUAL REVIEW STATION ---

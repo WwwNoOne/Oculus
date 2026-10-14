@@ -101,10 +101,13 @@ class EmailService:
             resultados["descargados"] += 1
             print(f"  [+] Descargado: {nombre_final}")
 
-    def descargar_correos(self, cuenta: str, servidor: str, puerto: int, usuario: str, password: str, carpeta: str = "INBOX", protocolo: str = "IMAP", estado_key: str = None, start_date: str = "2026-05-01", end_date: str = None, should_stop=None):
-        """Punto de entrada principal para IMAP o POP3."""
-        print(f"[*] Iniciando descarga ({protocolo}) para {usuario} en {servidor}")
+    def descargar_correos(self, cuenta: str, servidor: str, puerto: int, usuario: str, password: str, carpeta: str = "INBOX", protocolo: str = "IMAP", estado_key: str = None, start_date: str = "2026-05-01", end_date: str = None, should_stop=None, auth_type: str = "password", oauth_token: str = None):
+        """Punto de entrada principal para IMAP, POP3 u OAuth (XOAUTH2 por IMAP)."""
+        print(f"[*] Iniciando descarga ({protocolo}/{auth_type}) para {usuario} en {servidor}")
         estado_key = estado_key or usuario
+        if (auth_type or "password") in ("google", "microsoft"):
+            # OAuth solo por IMAP: XOAUTH2 no existe en POP3.
+            return self._descargar_imap_oauth(cuenta, servidor, puerto, usuario, oauth_token, auth_type, estado_key, start_date, end_date, should_stop)
         if protocolo.upper() == "POP3":
             return self._descargar_pop3(cuenta, servidor, puerto, usuario, password, estado_key, start_date, end_date, should_stop)
         else:
@@ -200,6 +203,135 @@ class EmailService:
                     pass
         except Exception as e:
             print(f"[!] Error IMAP en {cuenta}: {e}")
+            raise e
+
+        return resultados
+
+    def _descargar_imap_oauth(self, cuenta: str, servidor: str, puerto: int, usuario: str, oauth_token: str, auth_type: str, estado_key: str, start_date: str, end_date: str = None, should_stop=None):
+        """Descarga por IMAP con XOAUTH2 (login oficial, sin contrasena)."""
+        import datetime as _datetime
+        import email as _email
+        import email.utils
+        from src.backend.services import oauth_service
+
+        resultados = {"revisados": 0, "descargados": 0, "errores": 0}
+        if not oauth_token:
+            print(f"  [!] Sin token OAuth para '{cuenta}': reconecte la cuenta.")
+            resultados["errores"] += 1
+            return resultados
+        try:
+            start_date_value = _datetime.date.fromisoformat(start_date)
+        except (TypeError, ValueError):
+            print(f"  [!] Fecha invalida para '{cuenta}', usando 2026-05-01")
+            start_date_value = _datetime.date(2026, 5, 1)
+        fecha_corte = _datetime.datetime.combine(
+            start_date_value, _datetime.time.min, tzinfo=_datetime.timezone.utc)
+        fecha_fin = _datetime.datetime.combine(
+            _datetime.date.fromisoformat(end_date), _datetime.time.min,
+            tzinfo=_datetime.timezone.utc) if end_date else None
+
+        estado_file = self.download_dir / "sync_estado.json"
+        estado_descargas = {}
+        if estado_file.exists():
+            try:
+                with open(estado_file, "r") as f:
+                    estado_descargas = json.load(f)
+            except Exception:
+                pass
+        if estado_key not in estado_descargas:
+            estado_descargas[estado_key] = estado_descargas.pop(cuenta, [])
+
+        conn = None
+        intentos = 0
+        max_intentos = 3
+        while intentos < max_intentos:
+            try:
+                conn = oauth_service.conectar(usuario, auth_type, servidor, puerto,
+                                              token=oauth_token)
+                conn.select("INBOX", readonly=True)
+                break
+            except Exception as e:
+                intentos += 1
+                print(f"  [!] Intento {intentos}/{max_intentos} falló para '{cuenta}' (OAuth): {e}")
+                if intentos >= max_intentos:
+                    raise e
+                import time
+                time.sleep(5)
+
+        def _texto_asunto(msg):
+            try:
+                from email.header import decode_header, make_header
+                return str(make_header(decode_header(str(msg.get("Subject", "")))))
+            except Exception:
+                return str(msg.get("Subject", ""))
+
+        try:
+            try:
+                _estado, datos = conn.uid("search", None, "ALL")
+                uids = (datos[0] or b"").split()
+                print(f"  [IMAP-OAuth] {len(uids)} mensajes en el servidor.")
+                for num in uids:
+                    uid = num.decode()
+                    if uid in estado_descargas[estado_key]:
+                        continue
+                    resultados["revisados"] += 1
+                    try:
+                        _estado, fetched = conn.uid("fetch", num, "(RFC822)")
+                        crudo = fetched[0][1]
+                        msg = _email.message_from_bytes(crudo)
+
+                        date_str = msg.get("Date")
+                        if date_str:
+                            dt = _email.utils.parsedate_to_datetime(date_str)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=_datetime.timezone.utc)
+                            if dt < fecha_corte:
+                                estado_descargas[estado_key].append(uid)
+                                continue
+                            if fecha_fin and dt >= fecha_fin:
+                                estado_descargas[estado_key].append(uid)
+                                continue
+                        else:
+                            dt = _datetime.datetime.now()
+
+                        adjuntos_raw = []
+                        for part in msg.walk():
+                            if part.get_content_maintype() == 'multipart':
+                                continue
+                            filename = part.get_filename()
+                            if not filename:
+                                continue
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                adjuntos_raw.append({
+                                    'filename': filename,
+                                    'content_type': part.get_content_type(),
+                                    'payload': payload,
+                                })
+
+                        antes = resultados["descargados"] + resultados.get("adjuntos_otros", 0)
+                        self._procesar_mensaje_generico(cuenta, uid, _texto_asunto(msg),
+                                                        dt, adjuntos_raw, resultados)
+                        if resultados["descargados"] + resultados.get("adjuntos_otros", 0) > antes:
+                            estado_descargas[estado_key].append(uid)
+                        if should_stop and should_stop():
+                            break
+                    except Exception as ex:
+                        print(f"  [!] Error procesando correo UID {uid}: {ex}")
+                        resultados["errores"] += 1
+            finally:
+                try:
+                    with open(estado_file, "w") as f:
+                        json.dump(estado_descargas, f)
+                except Exception as save_error:
+                    print(f"  [!] No se pudo guardar sync_estado.json: {save_error}")
+                try:
+                    if conn is not None:
+                        conn.logout()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[!] Error IMAP-OAuth en {cuenta}: {e}")
             raise e
 
         return resultados

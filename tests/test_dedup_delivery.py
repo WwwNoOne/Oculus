@@ -326,6 +326,77 @@ def test_excel_omite_fecha_invalida():
     assert row is None
 
 
+def test_db_auth_type_roundtrip(tmp_path):
+    from src.backend.database.db_manager import DBManager
+
+    db = DBManager(tmp_path / "a.db")
+    ok, _ = db.add_email("Emp", "a@gmail.com", "", "imap.gmail.com", 993, "2026-05-01", "google")
+    assert ok
+    assert db.get_all_emails()[0]["auth_type"] == "google"
+    db.update_email("a@gmail.com", "Emp", "a@gmail.com", "", "imap.gmail.com", 993, "2026-05-01", "microsoft")
+    assert db.get_all_emails()[0]["auth_type"] == "microsoft"
+    db.update_email("a@gmail.com", "Emp", "a@gmail.com", "", "imap.gmail.com", 993)
+    assert db.get_all_emails()[0]["auth_type"] == "microsoft"
+
+
+def test_api_add_email_oauth_sin_password(carpetas, basedatos):
+    api = _api()
+    ok, _ = api.add_email("Emp", "a@gmail.com", "", "imap.gmail.com", 993, "2026-05-01", "google")
+    assert ok
+    ok, _ = api.add_email("Emp", "b@gmail.com", "", "imap.gmail.com", 993)
+    assert not ok
+
+
+def test_email_oauth_descarga_adjuntos(tmp_path, monkeypatch):
+    import email as email_lib
+    from email.message import EmailMessage
+    from src.backend.services.email_service import EmailService
+
+    msg = EmailMessage()
+    msg["Subject"] = "DTE prueba"
+    msg["From"] = "x@y.com"
+    msg["Date"] = email_lib.utils.formatdate()
+    msg.add_attachment(b"%PDF-1.4 falso", maintype="application",
+                       subtype="pdf", filename="doc.pdf")
+    crudo = msg.as_bytes()
+
+    class FakeIMAP:
+        def __init__(self, host, port):
+            pass
+
+        def authenticate(self, mech, func):
+            assert mech == "XOAUTH2"
+            assert func(None).startswith(b"user=cuenta@test.com\x01")
+
+        def select(self, *a, **k):
+            return ("OK", [b"1"])
+
+        def uid(self, cmd, *args):
+            if cmd == "search":
+                return ("OK", [b"101"])
+            if cmd == "fetch":
+                return ("OK", [(b"101 (RFC822 {5}", crudo)])
+            raise AssertionError(cmd)
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr("imaplib.IMAP4_SSL", FakeIMAP)
+    dest = tmp_path / "down"
+    dest.mkdir()
+    otros = tmp_path / "otros"
+    otros.mkdir()
+    svc = EmailService(str(dest), str(otros))
+    res = svc.descargar_correos("TEST", "imap.gmail.com", 993, "cuenta@test.com", "",
+                                auth_type="google", oauth_token="TOK",
+                                estado_key="cuenta@test.com", start_date="2026-01-01")
+    assert res["descargados"] == 1
+    assert len(list(dest.glob("TEST_101_*_doc.pdf"))) == 1
+    import json as _json
+    estado = _json.loads((dest / "sync_estado.json").read_text())
+    assert "101" in estado["cuenta@test.com"]
+
+
 def test_get_data_dir_respeta_override(monkeypatch, tmp_path):
     from src.backend.utils import config as config_mod
 
@@ -357,3 +428,73 @@ def test_json_malformado_sin_ia_retorna_none():
     ocr.llamaparse_api_key = ""
     assert ocr.process_raw_json_text("{no es json") is None
     assert ocr.process_raw_json_text("") is None
+
+
+def test_oauth_detectar_proveedor():
+    from src.backend.services import oauth_service as oauth
+
+    assert oauth.detectar_proveedor("a@gmail.com") == ("google", "imap.gmail.com")
+    assert oauth.detectar_proveedor("a@googlemail.com") == ("google", "imap.gmail.com")
+    assert oauth.detectar_proveedor("a@outlook.com") == ("microsoft", "outlook.office365.com")
+    assert oauth.detectar_proveedor("a@hotmail.com") == ("microsoft", "outlook.office365.com")
+    assert oauth.detectar_proveedor("facturas@foodservices.com") == ("password", "imap.foodservices.com")
+    assert oauth.detectar_proveedor("facturas@foodservices.com", forzar_microsoft=True) == (
+        "microsoft", "outlook.office365.com")
+
+
+def test_oauth_xoauth2_formato():
+    from src.backend.services import oauth_service as oauth
+
+    cadena = oauth.xoauth2_string("a@gmail.com", "TOKEN123")
+    assert cadena == b"user=a@gmail.com\x01auth=Bearer TOKEN123\x01\x01"
+
+
+def test_oauth_registrar_password_verifica_conexion(monkeypatch):
+    from src.backend.services import oauth_service as oauth
+
+    vistos = {}
+
+    class FakeKeyring:
+        def set_password(self, app, correo, valor):
+            vistos[correo] = valor
+
+    monkeypatch.setattr(oauth, "keyring", FakeKeyring())
+    monkeypatch.setattr(oauth, "_verificar", lambda cuenta: vistos.update(verificada=True))
+    cuenta = oauth.registrar_cuenta("facturas@foodservices.com", contrasena="secreto",
+                                    host="mail.foodservices.com")
+    assert cuenta == {"correo": "facturas@foodservices.com", "auth": "password",
+                      "host": "mail.foodservices.com", "puerto": 993,
+                      "contrasena": "secreto"}
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        oauth.registrar_cuenta("x@dominio.com")
+
+
+def test_oauth_google_token_refresh(monkeypatch):
+    from src.backend.services import oauth_service as oauth
+
+    almacen = {"a@gmail.com": '{"token": "viejo", "refresh_token": "r"}'}
+
+    class FakeKeyring:
+        def get_password(self, app, correo):
+            return almacen.get(correo)
+
+        def set_password(self, app, correo, valor):
+            almacen[correo] = valor
+
+    class FakeCreds:
+        valid = False
+        token = "nuevo-token"
+
+        def refresh(self, _req):
+            self.token = "nuevo-token"
+
+        def to_json(self):
+            return '{"token": "nuevo-token"}'
+
+    monkeypatch.setattr(oauth, "keyring", FakeKeyring())
+    monkeypatch.setattr(oauth, "Credentials",
+                        type("C", (), {"from_authorized_user_info": staticmethod(lambda *a: FakeCreds())}))
+    monkeypatch.setattr(oauth, "Request", type("R", (), {}))
+    assert oauth.obtener_token("a@gmail.com", "google") == "nuevo-token"
+    assert "nuevo-token" in almacen["a@gmail.com"]

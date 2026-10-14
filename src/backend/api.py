@@ -240,16 +240,19 @@ class Api:
     def add_company(self, alias):
         return db.add_company(alias)
 
-    def add_email(self, client, email, password_enc, server, port=993, start_date='2026-05-01'):
+    def add_email(self, client, email, password_enc, server, port=993, start_date='2026-05-01', auth_type='password'):
         valid, message = self._validar_cuenta(email, server, port)
         if not valid:
             return False, message
-        if not (password_enc or "").strip():
+        auth_type = (auth_type or 'password').strip().lower()
+        if auth_type not in ('password', 'google', 'microsoft'):
+            auth_type = 'password'
+        if auth_type == 'password' and not (password_enc or "").strip():
             return False, "La contraseña es obligatoria."
-        success, msg = db.add_email(client, email, password_enc, server, port, start_date)
+        success, msg = db.add_email(client, email, password_enc, server, port, start_date, auth_type)
         return success, msg
 
-    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01'):
+    def update_email(self, old_email, new_client, new_email, new_password, new_server, new_port, new_start_date='2026-05-01', auth_type=None):
         valid, message = self._validar_cuenta(new_email, new_server, new_port)
         if not valid:
             return False, message
@@ -262,12 +265,61 @@ class Api:
             if not current:
                 return False, "La cuenta a editar no existe."
             new_password = current.get("password_encrypted", "")
-        success, msg = db.update_email(old_email, new_client, new_email, new_password, new_server, new_port, new_start_date)
+        success, msg = db.update_email(old_email, new_client, new_email, new_password, new_server, new_port, new_start_date, auth_type)
         return success, msg
-        
+
     def delete_email(self, email):
         success, msg = db.delete_email(email)
+        if success:
+            try:
+                from src.backend.services import oauth_service
+                oauth_service.olvidar(email)
+            except Exception:
+                pass
         return success, msg
+
+    # --- OAUTH (login oficial en el navegador) ---
+    def oauth_start(self, email, provider, host=None, forzar_microsoft=False):
+        """Abre el navegador con el login oficial en un hilo. Ver con oauth_status()."""
+        import threading
+
+        email = (email or "").strip()
+        if provider not in ("google", "microsoft"):
+            return False, "Proveedor OAuth inválido."
+        if "@" not in email:
+            return False, "Correo inválido."
+        if getattr(self, "_oauth_thread", None) and self._oauth_thread.is_alive():
+            return False, "Ya hay un login en curso. Complételo en el navegador."
+
+        self._oauth_status = {"state": "RUNNING", "message": "Esperando el login en el navegador..."}
+
+        def worker():
+            try:
+                from src.backend.services import oauth_service
+                cuenta = oauth_service.registrar_cuenta(
+                    email, host=(host or None), forzar_microsoft=forzar_microsoft,
+                )
+                if cuenta["auth"] != provider:
+                    self._oauth_status = {
+                        "state": "ERROR",
+                        "message": f"Ese correo usa {cuenta['auth']}, no {provider}.",
+                    }
+                    return
+                self._oauth_status = {
+                    "state": "OK",
+                    "message": f"Conectado como {email}.",
+                    "account": cuenta,
+                }
+            except Exception as exc:
+                self._oauth_status = {"state": "ERROR", "message": str(exc)}
+
+        self._oauth_thread = threading.Thread(target=worker, daemon=True)
+        self._oauth_thread.start()
+        return True, "Se abrió el navegador con el login oficial. Complételo ahí."
+
+    def oauth_status(self):
+        """Estado del login en curso: RUNNING | OK (+account) | ERROR | IDLE."""
+        return getattr(self, "_oauth_status", {"state": "IDLE", "message": ""})
         
     # --- MANUAL REVIEW ---
     def get_manual_reviews(self):
@@ -361,7 +413,7 @@ class Api:
         
         # Encriptar las API keys antes de guardar a disco
         secure_data = data.copy()
-        for key_name in ("gemini", "deepseek", "llamaparse"):
+        for key_name in ("gemini", "deepseek", "llamaparse", "google_client_secret"):
             if key_name in secure_data and secure_data[key_name]:
                 secure_data[key_name] = encrypt_data(secure_data[key_name])
         settings_file = DATA_DIR / "settings.json"
@@ -382,16 +434,19 @@ class Api:
                     settings = json.load(f)
                     
                     # Desencriptar las llaves para enviarlas al frontend
-                    for key_name in ("gemini", "deepseek", "llamaparse"):
+                    for key_name in ("gemini", "deepseek", "llamaparse", "google_client_secret"):
                         if key_name in settings:
                             settings[key_name] = decrypt_data(settings[key_name])
                     # Claves de UI (p. ej. ultima carpeta de destino) pasan tal cual.
                     settings.setdefault("last_excel_dir", "")
+                    for key_name in ("google_client_id", "microsoft_client_id"):
+                        settings.setdefault(key_name, "")
                     return settings
             except Exception:
                 pass
 
-        return {"gemini": "", "deepseek": "", "llamaparse": "", "last_excel_dir": ""}
+        return {"gemini": "", "deepseek": "", "llamaparse": "", "last_excel_dir": "",
+                "google_client_id": "", "google_client_secret": "", "microsoft_client_id": ""}
 
     # --- EXPLORER ---
     def get_other_documents(self, client_filter="", date_filter=""):

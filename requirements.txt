@@ -6,11 +6,12 @@ python-dotenv
 pandas
 openpyxl
 imap-tools
-PyMuPDF
-rapidocr-onnxruntime
+PyMuPDFrapidocr-onnxruntime
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 requests
 google-genai
 llama-parse
+msal
+keyring

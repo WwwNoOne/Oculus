@@ -154,6 +154,23 @@
                     </div>
                     <div class="widget-body">
                         <input type="hidden" id="email-old-address">
+                        <details class="form-section" id="oauth-creds">
+                            <summary style="cursor:pointer; font-weight:600;">Paso 0 · Credenciales OAuth (una sola vez)</summary>
+                            <div class="form-group mt-2">
+                                <label>Google Client ID (Cloud Console → App de escritorio)</label>
+                                <input type="text" id="oauth-google-id" class="premium-input" placeholder="...apps.googleusercontent.com">
+                            </div>
+                            <div class="form-group">
+                                <label>Google Client Secret <span id="oauth-google-status" class="badge badge-teal" style="display:none; margin-left:10px;">Guardado</span></label>
+                                <input type="password" id="oauth-google-secret" class="premium-input" placeholder="Dejar vacío para mantener el actual">
+                            </div>
+                            <div class="form-group">
+                                <label>Microsoft Client ID (Entra → Registro de aplicaciones)</label>
+                                <input type="text" id="oauth-ms-id" class="premium-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                            </div>
+                            <button class="btn btn-outline-teal full-width" id="btn-save-oauth-creds" type="button"><i class="fa-solid fa-save"></i> Guardar credenciales</button>
+                            <small class="form-hint">El secreto se cifra localmente. Sin esto, el login oficial no puede abrirse.</small>
+                        </details>
                         <div class="form-group">
                             <label>Empresa / Alias</label>
                             <div style="display:flex; gap:10px;">
@@ -175,28 +192,45 @@
                             <input type="email" id="email-address" class="premium-input" placeholder="facturacion@empresa.com">
                         </div>
                         <div class="form-group">
-                            <label>Proveedor IMAP</label>
+                            <label>Tipo de cuenta</label>
                             <select id="email-provider" class="premium-input">
-                                <option value="imap.gmail.com">Gmail (imap.gmail.com)</option>
-                                <option value="outlook.office365.com">Outlook / Office365</option>
-                                <option value="custom">Otro (Personalizado)</option>
+                                <option value="gmail_oauth">Gmail (login oficial, recomendado)</option>
+                                <option value="outlook_oauth">Outlook / Hotmail (login oficial)</option>
+                                <option value="m365">Microsoft 365 (dominio propio)</option>
+                                <option value="gmail_pass">Gmail (contraseña de aplicación)</option>
+                                <option value="outlook_pass">Outlook (contraseña)</option>
+                                <option value="custom">Otro / dominio custom (contraseña)</option>
                             </select>
+                            <small class="form-hint">El login oficial abre el navegador y no pide contraseña de aplicación.</small>
                         </div>
                         <div class="form-group" id="custom-imap-group" style="display:none;">
                             <label>Servidor IMAP Custom</label>
                             <input type="text" id="custom-imap-server" class="premium-input" placeholder="imap.tudominio.com">
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" id="m365-group" style="display:none;">
+                            <label style="display:flex; gap:8px; align-items:center; cursor:pointer;">
+                                <input type="checkbox" id="email-force-m365">
+                                Mi dominio está alojado en Microsoft 365
+                            </label>
+                        </div>
+                        <div class="form-group" id="port-group">
                             <label>Puerto del Servidor</label>
                             <input type="number" id="email-port" class="premium-input" value="993" placeholder="993 (IMAP) o 995 (POP3)">
-                            <small class="form-hint">IMAP usa 993. POP3 usa 995.</small>
+                            <small class="form-hint">IMAP usa 993. POP3 usa 995. OAuth siempre usa IMAP 993.</small>
                         </div>
                         <div class="form-group">
                             <label>Descargar correos desde</label>
                             <input type="date" id="email-start-date" class="premium-input" value="2026-05-01">
                             <small class="form-hint">Esta fecha aplica solamente a esta cuenta.</small>
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" id="oauth-group" style="display:none;">
+                            <label>Conexión oficial</label>
+                            <div style="display:flex; gap:10px;">
+                                <button class="btn btn-outline-teal" id="btn-oauth-connect" type="button" style="flex:1; justify-content:center;"><i class="fa-solid fa-key"></i> Conectar en el navegador</button>
+                            </div>
+                            <small id="oauth-status" class="form-hint">Sin conectar.</small>
+                        </div>
+                        <div class="form-group" id="password-group">
                             <label>Contraseña de Aplicación</label>
                             <input type="password" id="email-password" class="premium-input" placeholder="Dejar vacío para mantener la actual">
                             <small class="form-hint"><i class="fa-solid fa-shield"></i> Se almacena cifrada localmente. Obligatoria solo al crear.</small>

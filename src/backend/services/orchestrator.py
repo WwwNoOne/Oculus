@@ -195,7 +195,24 @@ class Orchestrator:
                     password = cuenta["password_encrypted"]
                     servidor = cuenta["server"]
                     puerto = cuenta["port"]
-                    protocolo = "POP3" if puerto == 995 else "IMAP"
+                    auth_type = (cuenta.get("auth_type") or "password").lower()
+
+                    # Cuentas OAuth: token fresco + IMAP forzado (XOAUTH2 no existe en POP3).
+                    oauth_token = None
+                    if auth_type in ("google", "microsoft"):
+                        try:
+                            from src.backend.services import oauth_service
+                            oauth_token = oauth_service.obtener_token(email, auth_type)
+                        except Exception as e:
+                            self._say(f"OAuth de {email} vencido o sin sesion: {e}")
+                            db.update_email_status(email, 0)
+                            self.errors += 1
+                            self.accounts_done += 1
+                            continue
+                        puerto = 993
+                        protocolo = "IMAP"
+                    else:
+                        protocolo = "POP3" if puerto == 995 else "IMAP"
 
                     self.current_account = email
                     self._say(f"Descargando {email} ({self.accounts_done + 1}/{self.total_accounts}).")
@@ -211,6 +228,8 @@ class Orchestrator:
                             estado_key=email,
                             start_date=cuenta.get("start_date") or "2026-05-01",
                             should_stop=self._should_stop,
+                            auth_type=auth_type,
+                            oauth_token=oauth_token,
                         )
                         self._say(f"Cuenta {email}: {resultados}")
                         db.update_email_status(email, 1)  # Marcar como activa/ok
