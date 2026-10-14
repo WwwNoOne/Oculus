@@ -2,8 +2,9 @@ import os
 import json
 import shutil
 import re
+import datetime
 from pathlib import Path
-from src.backend.utils.config import CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_RESPALDO_PDF, CARPETA_DUPLICADOS, CARPETA_ERRORES
+from src.backend.utils.config import DATA_DIR, CARPETA_DESCARGAS, CARPETA_PROCESADOS, CARPETA_OTROS_DTES, CARPETA_DUPLICADOS, CARPETA_ERRORES
 from src.backend.database.db_manager import db
 from src.backend.services.ocr_service import OCRService
 from src.backend.utils.json_utils import extract_identificacion
@@ -39,28 +40,9 @@ class DTEService:
             return ""
         return str(identificacion.get("codigoGeneracion", "") or "").strip().upper()
 
-    def _es_duplicado(self, data, subfolder: str) -> bool:
-        """Revisa si el codigoGeneracion ya existe en procesados u otros del mismo subfolder."""
-        codigo = self._codigo(data)
-        if not codigo:
-            return False
-        for base in (CARPETA_PROCESADOS, CARPETA_OTROS_DTES):
-            folder = base / subfolder
-            if not folder.exists():
-                continue
-            for existing in folder.glob("*.json"):
-                if not existing.is_file():
-                    continue
-                try:
-                    try:
-                        existing_data = json.loads(existing.read_text(encoding="utf-8-sig"))
-                    except UnicodeDecodeError:
-                        existing_data = json.loads(existing.read_text(encoding="latin-1"))
-                except Exception:
-                    continue
-                if self._codigo(existing_data) == codigo:
-                    return True
-        return False
+    def _es_duplicado(self, data, subfolder: str = "") -> bool:
+        """Duplicado si el codigoGeneracion ya tiene fila en BD (ya no hay JSONs en disco)."""
+        return db.dte_exists(self._codigo(data))
 
     def _mover_a_duplicados(self, source_paths: list, subfolder: str):
         """Mueve archivos ya procesados antes a 08_Duplicados/<subfolder> sin borrarlos."""
@@ -91,6 +73,88 @@ class DTEService:
             cliente = partes[0] if len(partes) > 1 else "Cliente_Desconocido"
         cliente_folder = "".join(x for x in cliente if x.isalnum() or x in " -_").strip()
         return f"{cliente_folder}/{mes_anio}"
+
+    def _alias_carpeta(self, filename: str, destination_alias=None) -> str:
+        """Solo la parte del alias (para la fila de BD)."""
+        if destination_alias:
+            cliente = destination_alias
+        else:
+            partes = filename.split('_')
+            cliente = partes[0] if len(partes) > 1 else "Cliente_Desconocido"
+        return "".join(x for x in cliente if x.isalnum() or x in " -_").strip() or "Cliente_Desconocido"
+
+    def _tipo_final(self, identificacion) -> str:
+        """Tipo DTE final con rescate desde numeroControl. '' si irreconocible."""
+        identificacion = identificacion if isinstance(identificacion, dict) else {}
+        tipo = str(identificacion.get("tipoDte", "") or "").strip().upper()
+        if not re.fullmatch(r"\d{2}", tipo) or tipo == "00":
+            control = str(identificacion.get("numeroControl", "") or "").upper()
+            for code in self.target_codes:
+                if f"DTE-{code}" in control:
+                    return code
+            return ""
+        return tipo
+
+    def _fecha_valida(self, fecha: str) -> bool:
+        """Fecha calendario real entre 1990 y 2100 (mata 2000/00/00 y similares)."""
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha or ""):
+            return False
+        try:
+            parsed = datetime.datetime.strptime(fecha, "%Y-%m-%d")
+        except ValueError:
+            return False
+        return 1990 <= parsed.year <= 2100
+
+    def _valido(self, data) -> bool:
+        """Dato utilizable: codigo + tipo conocido/rescatable + fecha real."""
+        if not isinstance(data, dict):
+            return False
+        identificacion = self._get_identificacion(data)
+        if not isinstance(identificacion, dict):
+            return False
+        if not str(identificacion.get("codigoGeneracion", "") or "").strip():
+            return False
+        if not self._tipo_final(identificacion):
+            return False
+        return self._fecha_valida(str(identificacion.get("fecEmi", "") or ""))
+
+    def _emparejar_pdf(self, pdf: Path, jsons_por_uid: dict, jsons_usados: set):
+        """Empareja el PDF con su JSON del correo (nombre/codigo o 1-a-1 por UID).
+
+        Retorna (ruta_json | None, datos_estandarizados | None) sin escribir nada.
+        """
+        uid = self._get_uid_from_filename(pdf.name)
+        posibles = [j for j in jsons_por_uid.get(uid, []) if j not in jsons_usados]
+
+        puntuados = sorted(
+            ((self._pair_score(pdf.name, j.name), j) for j in posibles),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        elegido = None
+        if puntuados and puntuados[0][0] > 0 and (
+            len(puntuados) == 1 or puntuados[0][0] > puntuados[1][0]
+        ):
+            elegido = puntuados[0][1]
+        elif len(posibles) == 1:
+            # Solo hay un par posible en el correo.
+            elegido = posibles[0]
+            print(f"[*] Emparejamiento heurístico: {pdf.name} <-> {elegido.name}")
+
+        if elegido is None:
+            return None, None
+        return elegido, self._leer_json_estandarizado(elegido)
+
+    def _revisar_pdf_con_ia(self, pdf: Path):
+        """La IA revisa el PDF. Retorna datos validos o None (caso 1: fallo)."""
+        try:
+            crudo = self.ocr.process_pdf_to_raw_json(str(pdf))
+            if crudo is None:
+                return None
+            return self.ocr.parse_raw_to_standard(crudo)
+        except Exception as e:
+            print(f"[!] Revision IA fallo para {pdf.name}: {e}")
+            return None
 
     def _get_month_from_filename(self, filename: str) -> str:
         """Usa la fecha del nombre ALIAS_UID_DDMMYYYY como respaldo."""
@@ -150,85 +214,143 @@ class DTEService:
         return destination
 
     def migrate_legacy_documents(self):
-        """Reubica documentos antiguos sin reemplazar ni borrar originales validos."""
-        migrated = {"json_processed": 0, "json_other": 0, "pdf_backup": 0, "ai_deleted": 0}
+        """Migra instalaciones anteriores al modelo actual sin borrar nada.
 
-        # Versiones anteriores guardaban los PDF junto a los JSON procesados.
+        - Los PDF del respaldo 05_Respaldo_PDF (y sueltos en 03_) se reubican en
+          02_Procesados/<alias>/<mes>/ junto a su documento.
+        - Se crean las filas de BD desde los JSON historicos de 02_/03_ y se
+          vincula cada PDF hermano (sin IA, sin red).
+        - La basura de IA antigua se elimina.
+        """
+        migrated = {"pdf_migrated": 0, "db_backfilled": 0, "ai_deleted": 0}
+        legado_pdf = DATA_DIR / "05_Respaldo_PDF"
+
+        for base in (legado_pdf, CARPETA_OTROS_DTES):
+            if not base.exists():
+                continue
+            for path in sorted(p for p in base.rglob("*.pdf") if p.is_file()):
+                relative = path.relative_to(base)
+                alias = relative.parts[0] if relative.parts else "Cliente_Desconocido"
+                periodo = relative.parts[1] if len(relative.parts) > 1 else self._get_month_from_filename(path.name)
+                mejor = self._periodo_de_hermano(path)
+                if mejor:
+                    periodo = mejor
+                self._mover_sin_sobrescribir(path, CARPETA_PROCESADOS / alias / periodo)
+                migrated["pdf_migrated"] += 1
+
+        # PDFs mas profundos dentro de 02_: subirlos a <alias>/<mes>/.
         if CARPETA_PROCESADOS.exists():
-            for path in [p for p in CARPETA_PROCESADOS.rglob("*.pdf") if p.is_file()]:
+            for path in sorted(p for p in CARPETA_PROCESADOS.rglob("*.pdf") if p.is_file()):
                 relative = path.relative_to(CARPETA_PROCESADOS)
-                if len(relative.parts) >= 3:
+                if len(relative.parts) > 3:
                     self._mover_sin_sobrescribir(
-                        path,
-                        CARPETA_RESPALDO_PDF / relative.parts[0] / relative.parts[1],
+                        path, CARPETA_PROCESADOS / relative.parts[0] / relative.parts[1]
                     )
-                    migrated["pdf_backup"] += 1
+                    migrated["pdf_migrated"] += 1
 
-        if not CARPETA_OTROS_DTES.exists():
-            return migrated
-
-        files = [p for p in CARPETA_OTROS_DTES.rglob("*") if p.is_file()]
-        for path in files:
-            if path.name.lower().endswith("_estado.json"):
+        # Basura de IA antigua.
+        for base in (CARPETA_PROCESADOS, CARPETA_OTROS_DTES):
+            if not base.exists():
                 continue
-            relative = path.relative_to(CARPETA_OTROS_DTES)
-            alias = relative.parts[0] if relative.parts else "Cliente_Desconocido"
-            period = relative.parts[1] if len(relative.parts) > 1 else self._get_month_from_filename(path.name)
-            if period == "2000-01":
-                period = self._get_month_from_filename(path.name)
-            if path.suffix.lower() == ".pdf" and period in {"2000-01", "sin_fecha"}:
-                for sibling in path.parent.iterdir():
-                    if sibling.suffix.lower() != ".json" or self._normalizar_stem(sibling.name) != self._normalizar_stem(path.name):
-                        continue
-                    try:
-                        sibling_data = json.loads(sibling.read_text(encoding="utf-8-sig"))
-                        sibling_identification = self._get_identificacion(sibling_data)
-                        sibling_date = str(sibling_identification.get("fecEmi", ""))
-                        if re.match(r"^\d{4}-\d{2}", sibling_date):
-                            period = sibling_date[:7]
-                    except (OSError, ValueError, UnicodeDecodeError):
-                        pass
-            subfolder = f"{alias}/{period}"
-
-            if path.suffix.lower() == ".pdf":
-                self._mover_sin_sobrescribir(path, CARPETA_RESPALDO_PDF / subfolder)
-                migrated["pdf_backup"] += 1
-                continue
-            if path.suffix.lower() != ".json":
-                continue
-
-            try:
+            for path in sorted(p for p in base.rglob("*.json") if p.is_file()):
+                if path.name.lower().endswith("_estado.json"):
+                    continue
                 try:
-                    data = json.loads(path.read_text(encoding="utf-8-sig"))
-                except UnicodeDecodeError:
-                    data = json.loads(path.read_text(encoding="latin-1"))
-            except Exception:
-                continue
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8-sig"))
+                    except UnicodeDecodeError:
+                        data = json.loads(path.read_text(encoding="latin-1"))
+                except Exception:
+                    continue
+                identificacion = self._get_identificacion(data)
+                if self._is_ai_garbage(data, identificacion, self._tipo_final(identificacion)):
+                    path.unlink(missing_ok=True)
+                    migrated["ai_deleted"] += 1
 
-            identification = self._get_identificacion(data)
-            tipo = str(identification.get("tipoDte", "")).zfill(2)
-            if tipo == "00":
-                control = str(identification.get("numeroControl", "")).upper()
-                for code in self.target_codes:
-                    if f"DTE-{code}" in control:
-                        tipo = code
-                        break
-
-            if self._is_ai_garbage(data, identification, tipo):
-                path.unlink(missing_ok=True)
-                migrated["ai_deleted"] += 1
-                continue
-
-            fecha = str(identification.get("fecEmi", ""))
-            if re.match(r"^\d{4}-\d{2}", fecha):
-                subfolder = f"{alias}/{fecha[:7]}"
-            destination_root = CARPETA_PROCESADOS if tipo in self.target_codes else CARPETA_OTROS_DTES
-            self._mover_sin_sobrescribir(path, destination_root / subfolder)
-            migrated["json_processed" if tipo in self.target_codes else "json_other"] += 1
+        migrated["db_backfilled"] = self.backfill_db_from_jsons()
 
         if any(migrated.values()):
-            print(f"[Migracion] Documentos reubicados: {migrated}")
+            print(f"[Migracion] Reubicados: {migrated}")
         return migrated
+
+    def _periodo_de_hermano(self, pdf_path: Path) -> str:
+        """Periodo real desde el JSON hermano con igual stem. '' si no hay."""
+        try:
+            hermanos = list(pdf_path.parent.iterdir())
+        except OSError:
+            return ""
+        for sibling in hermanos:
+            if sibling.suffix.lower() != ".json":
+                continue
+            if self._normalizar_stem(sibling.name) != self._normalizar_stem(pdf_path.name):
+                continue
+            try:
+                sibling_data = json.loads(sibling.read_text(encoding="utf-8-sig"))
+            except Exception:
+                continue
+            fecha = str(self._get_identificacion(sibling_data).get("fecEmi", ""))
+            if self._fecha_valida(fecha):
+                return fecha[:7]
+        return ""
+
+    def backfill_db_from_jsons(self) -> int:
+        """Crea filas de BD desde los JSON historicos de 02_/03_ y vincula PDFs."""
+        insertados = 0
+        for base in (CARPETA_PROCESADOS, CARPETA_OTROS_DTES):
+            if not base.exists():
+                continue
+            for path in sorted(p for p in base.rglob("*.json") if p.is_file()):
+                if path.name.lower().endswith("_estado.json"):
+                    continue
+                try:
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8-sig"))
+                    except UnicodeDecodeError:
+                        data = json.loads(path.read_text(encoding="latin-1"))
+                except Exception:
+                    continue
+                if not self._valido(data):
+                    continue
+                identificacion = self._get_identificacion(data)
+                codigo = self._codigo(data)
+                tipo = self._tipo_final(identificacion)
+                fecha = str(identificacion.get("fecEmi", ""))
+                relative = path.relative_to(base)
+                alias = relative.parts[0] if relative.parts else "Cliente_Desconocido"
+                periodo = relative.parts[1] if len(relative.parts) > 1 else fecha[:7]
+                if not db.dte_exists(codigo):
+                    if db.dte_upsert(
+                        alias, periodo, codigo, tipo, fecha,
+                        str(identificacion.get("numeroControl", "")),
+                        "", json.dumps(data),
+                    ):
+                        insertados += 1
+                hermano = self._pdf_hermano(alias, periodo, path.name, codigo)
+                if hermano:
+                    db.dte_set_pdf(codigo, hermano)
+        return insertados
+
+    def _pdf_hermano(self, alias: str, periodo: str, json_name: str, codigo: str) -> str:
+        """Busca el PDF del documento en 02_<alias>/<periodo>/. Retorna nombre o ''."""
+        carpeta = CARPETA_PROCESADOS / alias / periodo
+        if not carpeta.exists():
+            return ""
+
+        def _clave(nombre: str) -> str:
+            stem = Path(nombre).stem.lower()
+            stem = re.sub(r"_standard$", "", stem)
+            return re.sub(r"(?:_\d+)+$", "", stem)
+
+        clave_json = _clave(json_name)
+        codigo_lower = (codigo or "").lower()
+        for pdf in sorted(carpeta.glob("*.pdf")):
+            if not pdf.is_file():
+                continue
+            if _clave(pdf.name) == clave_json:
+                return pdf.name
+            if codigo_lower and codigo_lower in pdf.name.lower():
+                return pdf.name
+        return ""
 
     def _get_uid_from_filename(self, filename: str) -> str:
         """Extrae el UID del nombre de archivo. Formato: ALIAS_UID_FECHA_ORIGINAL"""
@@ -239,15 +361,18 @@ class DTEService:
 
     def process_downloads(self, client_filter=None, source_dir=None, destination_alias=None, should_stop=None, on_progress=None):
         """
-        Escanea la carpeta de descargas, empareja PDFs con JSONs usando el UID del correo 
-        o procesa PDFs huérfanos mediante OCR/IA.
+        Flujo lineal por PDF: emparejar -> revision IA -> destino/duplicados/errores.
 
-        Deduplica por codigoGeneracion: si el documento ya existe en procesados u otros
-        del mismo subfolder, PDF y JSON se mueven a 08_Duplicados (no se borran).
-
-        on_progress(done, total): callback opcional para reportar avance real.
+        - La IA revisa cada PDF. Si no devuelve datos (caso 1), el PDF original
+          (+ su JSON si lo hay) va a 09_Errores.
+        - Si la IA pasa (caso 2), el PDF original va a 02_Procesados (u 03_Otros
+          segun tipo), la fila se guarda en BD y los JSON/markdown intermedios
+          se borran: en procesados queda solo el PDF original.
+        - Duplicado por codigoGeneracion (BD): a 08_Duplicados.
+        - Los JSON huerfanos (sin PDF) generan fila sin PDF.
+        on_progress(done, total): callback opcional de avance real.
         """
-        print("[*] Iniciando procesamiento matemático de descargas...")
+        print("[*] Iniciando procesamiento de descargas...")
         download_dir = Path(source_dir) if source_dir else CARPETA_DESCARGAS
         archivos = list(download_dir.glob("*.*"))
         if client_filter:
@@ -256,14 +381,14 @@ class DTEService:
                 path for path in archivos
                 if path.name.casefold().startswith(f"{client_filter}_")
             ]
-        
+
         pdfs = [f for f in archivos if f.suffix.lower() == '.pdf']
         jsons = [
             f for f in archivos
             if f.suffix.lower() == '.json'
             and not f.name.lower().endswith('_estado.json')
         ]
-        
+
         resultados = {"procesados_json": 0, "procesados_ocr": 0, "otros": 0, "errores": 0, "duplicados": 0}
         total_docs = len(pdfs) + len(jsons)
         done_docs = 0
@@ -274,243 +399,147 @@ class DTEService:
                     on_progress(done_docs, total_docs)
                 except Exception:
                     pass
-        
-        # Agrupar JSONs por ALIAS_UID
+
+        def _avanzar():
+            nonlocal done_docs
+            done_docs += 1
+            _report_progress()
+            return bool(should_stop and should_stop())
+
         jsons_por_uid = {}
         for j in jsons:
             uid = self._get_uid_from_filename(j.name)
-            if uid not in jsons_por_uid:
-                jsons_por_uid[uid] = []
-            jsons_por_uid[uid].append(j)
-            
+            jsons_por_uid.setdefault(uid, []).append(j)
+
         jsons_usados = set()
 
         for pdf in pdfs:
-            pdf_emparejado = False
-            json_asociado_data = None
-            json_asociado_path = None
-            
-            uid = self._get_uid_from_filename(pdf.name)
-            posibles_jsons = jsons_por_uid.get(uid, [])
-            posibles_jsons = [j for j in posibles_jsons if j not in jsons_usados]
-            
-            # ESTRATEGIA 1 y 2: nombre, UUID o numero de control compartido.
-            puntuados = sorted(
-                ((self._pair_score(pdf.name, j.name), j) for j in posibles_jsons),
-                key=lambda item: item[0],
-                reverse=True,
-            )
-            if puntuados and puntuados[0][0] > 0 and (
-                len(puntuados) == 1 or puntuados[0][0] > puntuados[1][0]
-            ):
-                j = puntuados[0][1]
-                json_asociado_path = j
-                json_asociado_data = self._leer_json_estandarizado(j)
-                if json_asociado_data:
-                    with open(j, 'w', encoding='utf-8') as f:
-                        json.dump(json_asociado_data, f, indent=4)
-                jsons_usados.add(j)
-                pdf_emparejado = True
-                    
-            # ESTRATEGIA 2: Emparejamiento por UID (Si los llamaron distinto, pero solo hay 1 par en el correo)
-            if not pdf_emparejado and len(posibles_jsons) == 1:
-                # Ojo: Solo lo hacemos si es seguro (1 a 1). Si hay 2 PDFs y 2 JSONs revueltos, cae a OCR
-                j = posibles_jsons[0]
-                json_asociado_path = j
-                json_asociado_data = self._leer_json_estandarizado(j)
-                
-                if json_asociado_data:
-                    with open(j, 'w', encoding='utf-8') as f:
-                        json.dump(json_asociado_data, f, indent=4)
-                        
-                jsons_usados.add(j)
-                pdf_emparejado = True
-                print(f"[*] Emparejamiento heurístico: {pdf.name} <-> {j.name}")
-                
-            # ESTRATEGIA 3: Fallback a Inteligencia Artificial (Huérfano o Corrupto)
-            if not pdf_emparejado:
-                print(f"[*] Fallback a OCR para PDF huérfano: {pdf.name}")
-                try:
-                    raw_json = self.ocr.process_pdf_to_raw_json(str(pdf))
-                    if raw_json is None:
-                        raise ValueError("OCR sin datos (sin IA configurada, ilegible o fallo de IA)")
-                    json_asociado_data = self.ocr.parse_raw_to_standard(raw_json)
-                    if json_asociado_data is None:
-                        raise ValueError("OCR sin datos (sin IA configurada, ilegible o fallo de IA)")
+            # 1. Emparejar con el JSON del correo (sin generar nada en disco).
+            json_path, email_data = self._emparejar_pdf(pdf, jsons_por_uid, jsons_usados)
+            candidatos = [pdf]
+            if json_path is not None:
+                jsons_usados.add(json_path)
+                if json_path.exists():
+                    candidatos.append(json_path)
 
-                    json_asociado_path = download_dir / f"{pdf.stem}_standard.json"
-                    with open(json_asociado_path, 'w', encoding='utf-8') as f:
-                        json.dump(json_asociado_data, f, indent=4)
+            # 2. Revision IA del PDF.
+            ai_data = self._revisar_pdf_con_ia(pdf)
 
-                    resultados["procesados_ocr"] += 1
-                except Exception as e:
-                    # Lineal a errores: el PDF sale de descargas, no se reintenta.
-                    db.log_extraction(pdf.name, "ERROR", error_msg=str(e))
-                    resultados["errores"] += 1
-                    self._mover_a_errores(
-                        [pdf],
-                        self._subfolder(pdf.name, self._get_month_from_filename(pdf.name), destination_alias),
-                    )
-                    done_docs += 1
-                    _report_progress()
-                    continue
+            # 3. Fuente autoritativa: JSON oficial si valido, si no la IA.
+            data = email_data if self._valido(email_data) else None
+            origen_ia = False
+            if data is None and self._valido(ai_data):
+                data = ai_data
+                origen_ia = True
 
-            if pdf_emparejado and json_asociado_data is None:
-                # Emparejado pero ilegible: lineal a errores junto con su JSON.
-                db.log_extraction(pdf.name, "ERROR", error_msg="JSON emparejado ilegible o vacio")
+            if data is None:
+                # CASO 1: la IA no devuelve nada -> original a errores.
+                db.log_extraction(pdf.name, "ERROR", error_msg="IA sin datos (fallo, ilegible o sin clave)")
                 resultados["errores"] += 1
-                candidatos = [pdf]
-                if json_asociado_path is not None and Path(json_asociado_path).exists():
-                    candidatos.append(json_asociado_path)
-                    jsons_usados.add(json_asociado_path)
                 self._mover_a_errores(
                     candidatos,
                     self._subfolder(pdf.name, self._get_month_from_filename(pdf.name), destination_alias),
                 )
-                done_docs += 1
-                _report_progress()
-                if should_stop and should_stop():
+                if _avanzar():
                     break
                 continue
-            # Filtrado por tipoDte (03, 05, 06, 14)
-            if json_asociado_data:
-                identificacion = self._get_identificacion(json_asociado_data)
-                tipo_dte = str(identificacion.get("tipoDte", "")).zfill(2)
-                
-                # Rescate por si viene en el número de control (Fallback de seguridad)
-                if not tipo_dte or tipo_dte == "00":
-                    control = str(identificacion.get("numeroControl", "")).upper()
-                    for t in self.target_codes:
-                        if f"DTE-{t}" in control:
-                            tipo_dte = t
-                            break
 
-                fecha = str(identificacion.get("fecEmi", ""))
-                mes_anio = fecha[:7] if re.match(r"^\d{4}-\d{2}", fecha) else self._get_month_from_filename(pdf.name)
-                
-                # Extraer cliente del nombre del archivo (el ALIAS es la primera parte antes del _)
-                # Para evitar duplicados en mayúsculas/minúsculas u OCR impreciso
-                partes_nombre = pdf.name.split('_')
-                if destination_alias:
-                    cliente = destination_alias
-                elif len(partes_nombre) > 1:
-                    cliente = partes_nombre[0]
-                else:
-                    cliente = "Cliente_Desconocido"
-                
-                cliente_folder = "".join(x for x in cliente if x.isalnum() or x in " -_").strip()
-                subfolder = f"{cliente_folder}/{mes_anio}"
+            identificacion = self._get_identificacion(data)
+            tipo_dte = self._tipo_final(identificacion)
+            codigo = self._codigo(data)
+            fecha = str(identificacion.get("fecEmi", ""))
+            alias_carpeta = self._alias_carpeta(pdf.name, destination_alias)
+            subfolder = self._subfolder(pdf.name, fecha[:7], destination_alias)
 
-                json_para_mover = [json_asociado_path] if json_asociado_path and json_asociado_path.exists() else []
-
-                # Deduplicacion: si el codigoGeneracion ya existe, conservar en 08_Duplicados.
-                # Esto tambien evita que un PDF huerfano genere un _standard.json duplicado
-                # del mismo documento (caso "1 correo con 2 PDF y 1 JSON").
-                if json_asociado_data and self._es_duplicado(json_asociado_data, subfolder):
-                    self._mover_a_duplicados([pdf] + json_para_mover, subfolder)
-                    if json_asociado_path is not None:
-                        jsons_usados.add(json_asociado_path)
-                    db.log_extraction(pdf.name, "DUPLICATE", dte_code=tipo_dte)
-                    resultados["duplicados"] += 1
-                    done_docs += 1
-                    _report_progress()
-                    if should_stop and should_stop():
-                        break
-                    continue
-
-                if tipo_dte in self.target_codes:
-                    self._mover_archivos([pdf], CARPETA_RESPALDO_PDF, subfolder)
-                    self._mover_archivos(json_para_mover, CARPETA_PROCESADOS, subfolder)
-                    db.log_extraction(pdf.name, "VALID_DTE", dte_code=tipo_dte)
-                    resultados["procesados_json"] += 1 if json_asociado_path else 0
-                else:
-                    if json_asociado_path and self._is_ai_garbage(json_asociado_data, identificacion, tipo_dte):
-                        # El PDF queda como respaldo; se elimina solo el JSON IA inutil.
-                        json_asociado_path.unlink(missing_ok=True)
-                        json_para_mover = []
-                    self._mover_archivos([pdf], CARPETA_RESPALDO_PDF, subfolder)
-                    self._mover_archivos(json_para_mover, CARPETA_OTROS_DTES, subfolder)
-                    db.log_extraction(pdf.name, "OTHER_DTE", dte_code=tipo_dte)
-                    resultados["otros"] += 1
-                done_docs += 1
-                _report_progress()
-                if should_stop and should_stop():
+            # 4. Deduplicacion por BD.
+            if self._es_duplicado(data):
+                self._mover_a_duplicados(candidatos, subfolder)
+                db.log_extraction(pdf.name, "DUPLICATE", dte_code=tipo_dte)
+                resultados["duplicados"] += 1
+                if _avanzar():
                     break
+                continue
 
-        # Procesar JSONs huérfanos (que no vinieron con PDF)
-        jsons_huerfanos = [j for j in jsons if j not in jsons_usados]
-        for j in jsons_huerfanos:
-            print(f"[*] Estandarizando JSON huérfano: {j.name}")
-            json_asociado_data = self._leer_json_estandarizado(j)
+            # 5. Guardar PDF original + fila en BD.
+            destino = CARPETA_PROCESADOS if tipo_dte in self.target_codes else CARPETA_OTROS_DTES
+            movido = self._mover_sin_sobrescribir(pdf, destino / subfolder)
+            fila_ok = db.dte_upsert(
+                alias_carpeta, fecha[:7], codigo, tipo_dte, fecha,
+                str(identificacion.get("numeroControl", "")),
+                movido.name, json.dumps(data),
+            )
+            if not fila_ok:
+                # Choque raro de insercion: el PDF no se pierde, va a errores.
+                db.log_extraction(pdf.name, "ERROR", error_msg="No se pudo guardar la fila en BD")
+                resultados["errores"] += 1
+                resto = [movido] + [c for c in candidatos[1:] if Path(c).exists()]
+                self._mover_a_errores(resto, subfolder)
+                if _avanzar():
+                    break
+                continue
 
-            if not json_asociado_data:
-                # Lineal a errores: el JSON sale de descargas, no se reintenta.
-                db.log_extraction(j.name, "ERROR", error_msg="JSON ilegible o vacio")
+            # 6. Borrar intermedios: en procesados queda solo el PDF original.
+            for intermedio in candidatos[1:]:
+                Path(intermedio).unlink(missing_ok=True)
+
+            if tipo_dte in self.target_codes:
+                db.log_extraction(pdf.name, "VALID_DTE", dte_code=tipo_dte)
+                resultados["procesados_ocr" if origen_ia else "procesados_json"] += 1
+            else:
+                db.log_extraction(pdf.name, "OTHER_DTE", dte_code=tipo_dte)
+                resultados["otros"] += 1
+            if _avanzar():
+                break
+
+        # JSONs huerfanos (sin PDF): generan fila sin PDF.
+        for j in [x for x in jsons if x not in jsons_usados]:
+            print(f"[*] Procesando JSON huérfano: {j.name}")
+            data = self._leer_json_estandarizado(j)
+            if not self._valido(data):
+                db.log_extraction(j.name, "ERROR", error_msg="JSON ilegible o incompleto")
                 resultados["errores"] += 1
                 self._mover_a_errores(
                     [j],
                     self._subfolder(j.name, self._get_month_from_filename(j.name), destination_alias),
                 )
-                done_docs += 1
-                _report_progress()
+                if _avanzar():
+                    break
                 continue
 
-            if json_asociado_data:
-                with open(j, 'w', encoding='utf-8') as f:
-                    json.dump(json_asociado_data, f, indent=4)
-                    
-                identificacion = self._get_identificacion(json_asociado_data)
-                tipo_dte = str(identificacion.get("tipoDte", "")).zfill(2)
-                if not tipo_dte or tipo_dte == "00":
-                    control = str(identificacion.get("numeroControl", "")).upper()
-                    for t in self.target_codes:
-                        if f"DTE-{t}" in control:
-                            tipo_dte = t
-                            break
+            identificacion = self._get_identificacion(data)
+            tipo_dte = self._tipo_final(identificacion)
+            codigo = self._codigo(data)
+            fecha = str(identificacion.get("fecEmi", ""))
+            alias_carpeta = self._alias_carpeta(j.name, destination_alias)
+            subfolder = self._subfolder(j.name, fecha[:7], destination_alias)
 
-                fecha = str(identificacion.get("fecEmi", ""))
-                mes_anio = fecha[:7] if re.match(r"^\d{4}-\d{2}", fecha) else self._get_month_from_filename(j.name)
-                
-                partes_nombre = j.name.split('_')
-                if destination_alias:
-                    cliente = destination_alias
-                elif len(partes_nombre) > 1:
-                    cliente = partes_nombre[0]
-                else:
-                    cliente = "Cliente_Desconocido"
-                    
-                cliente_folder = "".join(x for x in cliente if x.isalnum() or x in " -_").strip()
-                subfolder = f"{cliente_folder}/{mes_anio}"
-
-                # Deduplicacion: un JSON huerfano cuyo codigoGeneracion ya existe
-                # (p. ej. el segundo correo con el mismo DTE) va a 08_Duplicados.
-                if self._es_duplicado(json_asociado_data, subfolder):
-                    self._mover_a_duplicados([j], subfolder)
-                    db.log_extraction(j.name, "DUPLICATE", dte_code=tipo_dte)
-                    resultados["duplicados"] += 1
-                    done_docs += 1
-                    _report_progress()
-                    if should_stop and should_stop():
-                        break
-                    continue
-
-                if tipo_dte in self.target_codes:
-                    self._mover_archivos([j], CARPETA_PROCESADOS, subfolder)
-                    db.log_extraction(j.name, "VALID_DTE", dte_code=tipo_dte)
-                    resultados["procesados_json"] += 1
-                else:
-                    if self._is_ai_garbage(json_asociado_data, identificacion, tipo_dte):
-                        j.unlink(missing_ok=True)
-                        db.log_extraction(j.name, "DISCARDED_AI_JSON", dte_code=tipo_dte)
-                        done_docs += 1
-                        _report_progress()
-                        continue
-                    self._mover_archivos([j], CARPETA_OTROS_DTES, subfolder)
-                    db.log_extraction(j.name, "OTHER_DTE", dte_code=tipo_dte)
-                    resultados["otros"] += 1
-                done_docs += 1
-                _report_progress()
-                if should_stop and should_stop():
+            if self._es_duplicado(data):
+                self._mover_a_duplicados([j], subfolder)
+                db.log_extraction(j.name, "DUPLICATE", dte_code=tipo_dte)
+                resultados["duplicados"] += 1
+                if _avanzar():
                     break
+                continue
+
+            if not db.dte_upsert(
+                alias_carpeta, fecha[:7], codigo, tipo_dte, fecha,
+                str(identificacion.get("numeroControl", "")), "", json.dumps(data),
+            ):
+                db.log_extraction(j.name, "ERROR", error_msg="No se pudo guardar la fila en BD")
+                resultados["errores"] += 1
+                self._mover_a_errores([j], subfolder)
+                if _avanzar():
+                    break
+                continue
+
+            j.unlink(missing_ok=True)
+            if tipo_dte in self.target_codes:
+                db.log_extraction(j.name, "VALID_DTE", dte_code=tipo_dte)
+                resultados["procesados_json"] += 1
+            else:
+                db.log_extraction(j.name, "OTHER_DTE", dte_code=tipo_dte)
+                resultados["otros"] += 1
+            if _avanzar():
+                break
 
         return resultados

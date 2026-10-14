@@ -4,7 +4,6 @@ from src.backend.services.orchestrator import Orchestrator
 from src.backend.utils.config import (
     CARPETA_PROCESADOS,
     CARPETA_OTROS_DTES,
-    CARPETA_RESPALDO_PDF,
     CARPETA_DUPLICADOS,
     CARPETA_ERRORES,
     DATA_DIR,
@@ -142,7 +141,7 @@ class Api:
         roots = [
             CARPETA_PROCESADOS / alias,
             CARPETA_OTROS_DTES / alias,
-            CARPETA_RESPALDO_PDF / alias,
+            DATA_DIR / "05_Respaldo_PDF" / alias,
             CARPETA_DESCARGAS_RESPALDO / alias,
             CARPETA_DUPLICADOS / alias,
             CARPETA_ERRORES / alias,
@@ -199,7 +198,7 @@ class Api:
         targets = [
             CARPETA_PROCESADOS / alias,
             CARPETA_OTROS_DTES / alias,
-            CARPETA_RESPALDO_PDF / alias,
+            DATA_DIR / "05_Respaldo_PDF" / alias,
             CARPETA_DESCARGAS_RESPALDO / alias,
             CARPETA_DUPLICADOS / alias,
             CARPETA_ERRORES / alias,
@@ -223,9 +222,16 @@ class Api:
         return True, f"Respaldo '{alias}' eliminado: {removed_files} archivos. Esta acción no se puede deshacer."
         
     def get_months(self, client_name):
+        meses = set()
         client_path = CARPETA_PROCESADOS / client_name
-        if not client_path.exists(): return []
-        return sorted(f.name for f in client_path.iterdir() if f.is_dir())
+        if client_path.exists():
+            meses.update(f.name for f in client_path.iterdir() if f.is_dir())
+        # La BD es la fuente de filas: unir periodos aunque no haya carpeta.
+        try:
+            meses.update(db.distinct_periods(client_name))
+        except Exception:
+            pass
+        return sorted(meses)
         
     def generate_excel(self, client_name, month_year, save_path):
         from src.backend.services.excel_service import ExcelService
@@ -276,11 +282,9 @@ class Api:
             if month_year:
                 selected_path = client_path / month_year
                 if selected_path.exists():
-                    json_count = len(list(selected_path.glob("*.json")))
-                    # Los PDF viven en 05_Respaldo_PDF/<cliente>/<mes>/, no junto a los JSON.
-                    pdf_backup = CARPETA_RESPALDO_PDF / client_name / month_year
-                    if pdf_backup.exists():
-                        pdf_count = len(list(pdf_backup.glob("*.pdf")))
+                    # En procesados quedan solo PDF originales; las filas estan en BD.
+                    pdf_count = len(list(selected_path.glob("*.pdf")))
+                    json_count = db.count_dte_rows(client_name, month_year)
                     # Los fallos lineales viven en 09_Errores/<cliente>/<mes>/.
                     error_backup = CARPETA_ERRORES / client_name / month_year
                     if error_backup.exists():
@@ -515,8 +519,8 @@ class Api:
         
         docs = []
         file_id = 1
-        # La lista de Otros muestra JSON; los PDF se conservan como respaldo
-        # en 05_Respaldo_PDF y no deben mezclarse en esta vista.
+        # La lista de Otros muestra los PDF originales (y JSON historicos):
+        # ya no existe 05_Respaldo_PDF, el PDF vive junto a su documento.
         if not CARPETA_OTROS_DTES.exists():
             return docs
         for client_dir in CARPETA_OTROS_DTES.iterdir():
@@ -540,7 +544,7 @@ class Api:
                         continue
                         
                     file_type = file_path.suffix.lower().replace('.', '')
-                    if file_type != 'json':
+                    if file_type not in {'json', 'pdf'}:
                         continue
                         
                     docs.append({

@@ -49,6 +49,28 @@ class DBManager:
                     error_msg TEXT
                 )
             ''')
+
+            # Documentos aprobados por la IA: fuente de datos del libro de compras.
+            # El PDF original vive en 02_Procesados/<alias>/<mes>/; los JSON
+            # intermedios se eliminan tras guardar la fila.
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS dte_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alias TEXT NOT NULL,
+                    periodo TEXT NOT NULL,
+                    codigo_generacion TEXT NOT NULL UNIQUE,
+                    tipo_dte TEXT NOT NULL,
+                    fecha_emision TEXT NOT NULL,
+                    numero_control TEXT DEFAULT '',
+                    pdf_name TEXT DEFAULT '',
+                    data_json TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_dte_alias_periodo
+                ON dte_documents(alias, periodo)
+            ''')
             
             # Migración para agregar la columna 'client' si venimos de versiones viejas
             try:
@@ -136,6 +158,92 @@ class DBManager:
             cursor.execute("DELETE FROM companies WHERE alias = ? COLLATE NOCASE", ((alias or "").strip(),))
             conn.commit()
             return cursor.rowcount > 0
+
+    # --- DOCUMENTOS (filas del libro de compras) ---
+    def dte_exists(self, codigo):
+        """True si el codigoGeneracion ya tiene fila (deduplicacion por BD)."""
+        codigo = (codigo or "").strip().upper()
+        if not codigo:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM dte_documents WHERE codigo_generacion = ?", (codigo,)
+            )
+            return cursor.fetchone() is not None
+
+    def dte_upsert(self, alias, periodo, codigo, tipo_dte, fecha_emision,
+                   numero_control="", pdf_name="", data_json="{}"):
+        """Inserta la fila del documento. Retorna True si se inserto,
+        False si el codigo ya existia (duplicado)."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """INSERT OR IGNORE INTO dte_documents
+                       (alias, periodo, codigo_generacion, tipo_dte, fecha_emision,
+                        numero_control, pdf_name, data_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (alias, periodo, (codigo or "").strip().upper(), tipo_dte,
+                     fecha_emision, numero_control or "", pdf_name or "", data_json or "{}"),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            return False
+
+    def dte_set_pdf(self, codigo, pdf_name):
+        """Vincula el PDF a una fila existente (migracion de respaldos)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE dte_documents SET pdf_name = ? WHERE codigo_generacion = ?",
+                (pdf_name or "", (codigo or "").strip().upper()),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_dte_rows(self, alias, periodo):
+        """Filas del libro para un alias y periodo, ordenadas por fecha e id."""
+        import json as _json
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT codigo_generacion, tipo_dte, fecha_emision, numero_control,
+                          pdf_name, data_json
+                   FROM dte_documents
+                   WHERE alias = ? COLLATE NOCASE AND periodo = ?
+                   ORDER BY fecha_emision, id""",
+                ((alias or "").strip(), periodo or ""),
+            )
+            columns = [column[0] for column in cursor.description]
+            rows = []
+            for record in cursor.fetchall():
+                row = dict(zip(columns, record))
+                try:
+                    row["data"] = _json.loads(row.get("data_json") or "{}")
+                except Exception:
+                    row["data"] = {}
+                rows.append(row)
+            return rows
+
+    def count_dte_rows(self, alias, periodo):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM dte_documents WHERE alias = ? COLLATE NOCASE AND periodo = ?",
+                ((alias or "").strip(), periodo or ""),
+            )
+            return cursor.fetchone()[0]
+
+    def distinct_periods(self, alias):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT periodo FROM dte_documents WHERE alias = ? COLLATE NOCASE ORDER BY periodo",
+                ((alias or "").strip(),),
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
 
     def add_company(self, alias):
         alias = (alias or "").strip()

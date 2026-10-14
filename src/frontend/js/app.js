@@ -229,10 +229,10 @@ document.addEventListener("DOMContentLoaded", () => {
         const diagnostics = await window.pywebview.api.get_excel_diagnostics(selClient.value, selMonth.value);
         const periods = diagnostics.periods.length ? diagnostics.periods.join(", ") : "ninguno";
         const selected = diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir;
-        excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | JSON del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
+        excelDiagnostics.textContent = `Ruta activa: ${selected} | Períodos: ${periods} | Documentos del período: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
         const summary = document.getElementById("excel-summary");
         if(summary) {
-            const base = `${diagnostics.json_count} documentos JSON, ${diagnostics.pdf_count} con PDF`;
+            const base = `${diagnostics.json_count} documentos, ${diagnostics.pdf_count} con PDF`;
             summary.textContent = (selClient.value && selMonth.value)
                 ? base + ((diagnostics.error_count || 0) > 0 ? `, ${diagnostics.error_count} con errores.` : ".")
                 : "";
@@ -323,7 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const diagnostics = await window.pywebview.api.get_excel_diagnostics(
                     selClient.value, selMonth.value
                 );
-                excelDiagnostics.textContent = `Ruta activa: ${diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir} | Períodos disponibles: ${diagnostics.periods.join(", ") || "ninguno"} | JSON encontrados: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
+                excelDiagnostics.textContent = `Ruta activa: ${diagnostics.selected_path || diagnostics.client_path || diagnostics.processed_dir} | Períodos disponibles: ${diagnostics.periods.join(", ") || "ninguno"} | Documentos: ${diagnostics.json_count} | Base: ${diagnostics.database} (${diagnostics.database_exists ? "creada" : "no encontrada"})`;
             }
         } catch (error) {
             showToast("Error al generar el Excel.");

@@ -55,14 +55,15 @@ def main() -> int:
         # Reintentos: OneDrive/antivirus pueden bloquear archivos momentaneamente.
         import time
 
-        for intento in range(4):
+        time.sleep(10)
+        for intento in range(6):
             try:
                 shutil.rmtree(SALIDA)
                 break
             except OSError:
-                if intento == 3:
+                if intento == 5:
                     raise
-                time.sleep(3)
+                time.sleep(5)
     staging = SALIDA / "entrada_prueba"
     staging.mkdir(parents=True, exist_ok=True)
     for origen in archivos:
@@ -79,10 +80,10 @@ def main() -> int:
     print(f"[*] Archivos sin procesar en staging: {restantes}")
 
     filas = [
-        ("02_Procesados (JSON)", SALIDA / "02_Procesados", "*.json"),
-        ("03_Otros_DTEs (JSON)", SALIDA / "03_Otros_DTEs", "*.json"),
-        ("05_Respaldo_PDF (PDF)", SALIDA / "05_Respaldo_PDF", "*.pdf"),
+        ("02_Procesados (PDF)", SALIDA / "02_Procesados", "*.pdf"),
+        ("03_Otros_DTEs (PDF)", SALIDA / "03_Otros_DTEs", "*.pdf"),
         ("08_Duplicados (todos)", SALIDA / "08_Duplicados", "*.*"),
+        ("09_Errores (todos)", SALIDA / "09_Errores", "*.*"),
     ]
     print("\nDestino                          Archivos")
     print("-" * 50)
